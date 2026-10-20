@@ -1,4 +1,13 @@
-# PostgreSQL + Redis for development and tests: `docker compose up -d`
+# The whole stack with one command: `docker compose up -d --build`
+# (Postgres + Redis only, for running the API from the host: `docker compose up -d postgres redis`)
+x-app-env: &app-env
+  DATABASE_URL: postgres://postgres:postgres@postgres:5432/modex
+  REDIS_URL: redis://redis:6379
+  # Local development value only; real environments inject a secret.
+  JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  ENABLE_DEV_ROUTES: ${ENABLE_DEV_ROUTES:-true}
+
 services:
   postgres:
     image: postgres:16
@@ -31,6 +40,38 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # One-shot: applies pending migrations, then exits. An advisory lock makes it
+  # safe even if several of these run at once.
+  migrate:
+    build: .
+    image: ticketrush-api
+    command: ["node", "dist/database/migrate.js"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    image: ticketrush-api
+    environment:
+      <<: *app-env
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Liveness only: a database outage must not mark API instances unhealthy.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   pgdata:

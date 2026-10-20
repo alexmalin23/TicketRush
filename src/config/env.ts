@@ -18,12 +18,17 @@ const EnvSchema = z.object({
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
 
+  REDIS_URL: z.string().min(1, "REDIS_URL is required"),
+
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters"),
   JWT_EXPIRES_IN: z.string().default("1h"),
 
   /** "*" or a comma separated list of allowed origins */
   CORS_ORIGIN: z.string().default("*"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error", "silent"]).default("info"),
+
+  /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
+  ENABLE_DEV_ROUTES: z.stringbool().default(false),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -67,6 +67,11 @@ describe("Database & lifecycle (e2e)", () => {
     await expect(ExpressFactory.create(appDefinition)).rejects.toThrow();
   });
 
+  it("fails fast at startup when Redis is unreachable", async () => {
+    process.env.REDIS_URL = "redis://127.0.0.1:1";
+    await expect(ExpressFactory.create(appDefinition)).rejects.toThrow("Redis is unreachable at startup");
+  });
+
   it("fails fast at startup when the environment is invalid", async () => {
     process.env.JWT_SECRET = "short";
     await expect(ExpressFactory.create(appDefinition)).rejects.toThrow("Invalid environment variables");
