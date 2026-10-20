@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.env
+.dev/
+CLAUDE.md
+/README.md
+.claude/
+.DS_Store
