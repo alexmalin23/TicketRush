@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "ts-node src/database/migrate.ts",
     "db:seed": "ts-node src/database/seed.ts",
+    "db:reset": "ts-node src/database/seed.ts reset",
     "test": "jest --runInBand",
     "test:unit": "jest test/unit",
     "test:integration": "jest test/integration --runInBand",
