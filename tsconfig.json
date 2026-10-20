@@ -13,5 +13,5 @@
     "useDefineForClassFields": false,
     "types": ["node", "jest"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

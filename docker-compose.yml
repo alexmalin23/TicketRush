@@ -73,6 +73,18 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Load generator. Only started on demand (`npm run load -- <scenario>`), never by `up`.
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    volumes:
+      - ./load:/load
+    environment:
+      BASE_URL: http://api:3000
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:
