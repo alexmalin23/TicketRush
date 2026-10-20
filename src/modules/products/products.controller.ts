@@ -26,10 +26,7 @@ export class ProductsController {
   @Get("/")
   @Validate({ query: PaginationQuerySchema })
   findAll(req: Request<object, unknown, unknown, PaginationQuery>) {
-
-    // return json 
-    return { data: []};
-    // return this.productsService.findAll(req.query);
+    return this.productsService.findAll(req.query);
   }
 
   @Get("/:id")
