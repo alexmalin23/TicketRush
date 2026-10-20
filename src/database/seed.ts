@@ -3,7 +3,7 @@ import { loadDotEnvFile } from "../config/env";
 import { hashPassword } from "../modules/auth/password";
 
 /**
- * Development data: one admin and a few products. Safe to run more than once.
+ * Development data: one admin. Safe to run more than once.
  * Admin login: admin@example.com / admin12345
  */
 async function seed(pool: Pool): Promise<void> {
@@ -12,14 +12,6 @@ async function seed(pool: Pool): Promise<void> {
      ON CONFLICT (email) DO NOTHING`,
     ["admin@example.com", await hashPassword("admin12345")]
   );
-
-  const { rows } = await pool.query<{ count: string }>("SELECT count(*) FROM products");
-  if (Number(rows[0].count) === 0) {
-    await pool.query(
-      `INSERT INTO products (name, price, stock) VALUES
-         ('Keyboard', 120, 25), ('Mouse', 60, 40), ('27" Monitor', 900, 8), ('Headphones', 250, 15)`
-    );
-  }
 }
 
 loadDotEnvFile();

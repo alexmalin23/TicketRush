@@ -25,12 +25,12 @@ describe("Database & lifecycle (e2e)", () => {
 
     await expect(
       db.transaction(async (client) => {
-        await client.query("INSERT INTO products (name, price) VALUES ('ghost', 1)");
+        await client.query("INSERT INTO venues (name) VALUES ('ghost')");
         throw new Error("something failed after the insert");
       })
     ).rejects.toThrow("something failed");
 
-    const { rows } = await db.query("SELECT * FROM products WHERE name = 'ghost'");
+    const { rows } = await db.query("SELECT * FROM venues WHERE name = 'ghost'");
     expect(rows).toHaveLength(0);
     await app.close();
   });
@@ -41,12 +41,15 @@ describe("Database & lifecycle (e2e)", () => {
     const app = await createTestApp();
     const pool = app.get<Pool>(PG_POOL);
 
+    // Any route that queries the database; an unknown email still runs one SELECT.
+    const login = () => http(app).post("/auth/login").send({ email: "nobody@example.com", password: "x" });
+
     const held = await pool.connect(); // take the only connection
-    const res = await http(app).get("/products").expect(503);
+    const res = await login().expect(503);
     expect(res.body.message).toMatch(/temporarily unavailable/);
 
     held.release();
-    await http(app).get("/products").expect(200);
+    await login().expect(401); // reached the database again: unknown user, not 503
     await app.close();
   });
 

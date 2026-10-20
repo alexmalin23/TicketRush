@@ -30,8 +30,8 @@ export class DatabaseService implements Queryable, OnInit, OnShutdown {
   /**
    * Usage (in a Service):
    *   return this.database.transaction(async (client) => {
-   *     await this.productsModel.decrementStock(id, qty, client);
-   *     return this.ordersModel.create(userId, total, client);
+   *     await this.seatsModel.markSold(seatIds, client);
+   *     return this.ordersModel.create(order, client);
    *   });
    * If the callback throws, everything it did is rolled back.
    */
