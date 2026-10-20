@@ -1,44 +1,13 @@
-import { ConflictException, NotFoundException, UnauthorizedException } from "../../src/core";
+import { ConflictException, UnauthorizedException } from "../../src/core";
 import { AuthService } from "../../src/modules/auth/auth.service";
 import { hashPassword, verifyPassword } from "../../src/modules/auth/password";
 import { TokenService } from "../../src/modules/auth/token.service";
-import { ProductsModel } from "../../src/modules/products/products.model";
-import { ProductsService } from "../../src/modules/products/products.service";
 import { UsersModel } from "../../src/modules/users/users.model";
 
 /**
  * Services are plain classes: we build them with `new` and hand-made mocks.
  * No container, no database. This is the testability that DI buys us.
  */
-
-describe("ProductsService", () => {
-  const model = {
-    findById: jest.fn(),
-    update: jest.fn(),
-    delete: jest.fn(),
-  };
-  const service = new ProductsService(model as unknown as ProductsModel);
-
-  beforeEach(() => jest.resetAllMocks());
-
-  it("returns the product from the model", async () => {
-    model.findById.mockResolvedValue({ id: 1, name: "pen" });
-    await expect(service.findOne(1)).resolves.toEqual({ id: 1, name: "pen" });
-    expect(model.findById).toHaveBeenCalledWith(1);
-  });
-
-  it("throws NotFound when the model returns null", async () => {
-    model.findById.mockResolvedValue(null);
-    await expect(service.findOne(9)).rejects.toBeInstanceOf(NotFoundException);
-  });
-
-  it("throws NotFound when updating or deleting a missing product", async () => {
-    model.update.mockResolvedValue(null);
-    model.delete.mockResolvedValue(false);
-    await expect(service.update(9, { price: 1 })).rejects.toBeInstanceOf(NotFoundException);
-    await expect(service.remove(9)).rejects.toBeInstanceOf(NotFoundException);
-  });
-});
 
 describe("password hashing", () => {
   it("verifies the right password and rejects others", async () => {

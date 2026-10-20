@@ -19,7 +19,7 @@ export async function createTestApp(): Promise<ModexApplication> {
 export async function resetDatabase(app: ModexApplication): Promise<void> {
   await app
     .get(DatabaseService)
-    .query("TRUNCATE order_items, orders, products, users RESTART IDENTITY CASCADE");
+    .query("TRUNCATE idempotency_keys, tickets, payments, order_items, orders, seats, events, venues, users RESTART IDENTITY CASCADE");
 }
 
 export function http(app: ModexApplication) {
@@ -44,18 +44,5 @@ export async function createUser(
   return { id, token: login.body.accessToken };
 }
 
-export async function insertProduct(
-  app: ModexApplication,
-  data: { name: string; price: number; stock: number }
-): Promise<{ id: number }> {
-  const { rows } = await app
-    .get(DatabaseService)
-    .query<{ id: number }>("INSERT INTO products (name, price, stock) VALUES ($1, $2, $3) RETURNING id", [
-      data.name,
-      data.price,
-      data.stock,
-    ]);
-  return rows[0];
-}
 
 export const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });

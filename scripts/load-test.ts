@@ -1,6 +1,6 @@
 /**
  * Basic load test: boots the real app on a random port and hammers two endpoints.
- * Uses the database in .env (run db:migrate + db:seed first).
+ * Uses the database and Redis in .env (run db:migrate first).
  *
  *   npm run test:load
  *   CONNECTIONS=100 DURATION=20 npm run test:load
@@ -34,8 +34,8 @@ async function main() {
 
   console.log(`Load test: ${connections} connections x ${duration}s per endpoint\n`);
   const errors =
-    (await run(`${base}/products?limit=20`, "GET /products")) +
-    (await run(`${base}/products/1`, "GET /products/1"));
+    (await run(`${base}/health`, "GET /health")) +
+    (await run(`${base}/ready`, "GET /ready"));
 
   await app.close();
   if (errors > 0) process.exitCode = 1;
