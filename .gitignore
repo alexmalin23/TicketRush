@@ -4,6 +4,6 @@ coverage/
 .env
 .dev/
 CLAUDE.md
-/README.md
+README.md
 .claude/
 .DS_Store

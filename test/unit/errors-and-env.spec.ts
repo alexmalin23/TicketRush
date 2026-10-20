@@ -36,17 +36,19 @@ describe("toErrorBody", () => {
 
 describe("loadEnv", () => {
   it("lists every missing or invalid variable", () => {
-    expect(() => loadEnv({ JWT_SECRET: "short" })).toThrow(/DATABASE_URL[\s\S]*JWT_SECRET/);
+    expect(() => loadEnv({ JWT_SECRET: "short" })).toThrow(/DATABASE_URL[\s\S]*REDIS_URL[\s\S]*JWT_SECRET/);
   });
 
   it("coerces numbers and applies defaults", () => {
     const env = loadEnv({
       DATABASE_URL: "postgres://localhost/db",
+      REDIS_URL: "redis://localhost:6379",
       JWT_SECRET: "x".repeat(20),
       PORT: "8080",
     });
     expect(env.PORT).toBe(8080);
     expect(env.DB_POOL_MAX).toBe(10);
     expect(env.LOG_LEVEL).toBe("info");
+    expect(env.ENABLE_DEV_ROUTES).toBe(false);
   });
 });

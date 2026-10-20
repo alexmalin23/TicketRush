@@ -14,3 +14,6 @@ export interface Queryable {
     values?: unknown[]
   ): Promise<QueryResult<R>>;
 }
+
+/** DI token for the shared ioredis client: constructor(@Inject(REDIS) redis: Redis) */
+export const REDIS = "REDIS";
