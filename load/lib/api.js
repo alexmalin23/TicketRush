@@ -24,7 +24,7 @@ export function request(method, path, { body, token, name, phase = "main" } = {}
 }
 
 export function login(email, phase = "main") {
-  const res = request("POST", "/auth/login", { body: { email, password: USER_PASSWORD }, phase });
+  const res = request("POST", "/api/v1/auth/login", { body: { email, password: USER_PASSWORD }, phase });
   if (res.status !== 200) fail(`login ${email} failed: ${res.status} ${res.body}`);
   return res.json("accessToken");
 }

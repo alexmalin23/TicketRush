@@ -1,11 +1,13 @@
 import { ConflictException, Injectable, UnauthorizedException } from "../../core";
-import { User, UsersModel } from "../users/users.model";
+import { UsersModel } from "../users/users.model";
 import { LoginInput, RegisterInput } from "./auth.schemas";
 import { DUMMY_HASH, hashPassword, verifyPassword } from "./password";
 import { TokenService } from "./token.service";
 
+/** What register and login return: the account and a bearer token for the next requests. */
 export interface AuthResult {
-  user: User;
+  id: number;
+  email: string;
   accessToken: string;
 }
 
@@ -27,7 +29,7 @@ export class AuthService {
       email: input.email,
       passwordHash: await hashPassword(input.password),
     });
-    return { user, accessToken: this.tokens.sign(user) };
+    return { id: user.id, email: user.email, accessToken: this.tokens.sign(user) };
   }
 
   async login(input: LoginInput): Promise<AuthResult> {
@@ -40,6 +42,6 @@ export class AuthService {
     }
 
     const { passwordHash: _hash, ...user } = record;
-    return { user, accessToken: this.tokens.sign(user) };
+    return { id: user.id, email: user.email, accessToken: this.tokens.sign(user) };
   }
 }

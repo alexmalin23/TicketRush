@@ -33,14 +33,14 @@ export async function createUser(
   role: Role = "user",
   password = "password123"
 ): Promise<{ id: number; token: string }> {
-  const registered = await http(app).post("/auth/register").send({ email, password }).expect(201);
-  const id: number = registered.body.user.id;
+  const registered = await http(app).post("/api/v1/auth/register").send({ email, password }).expect(201);
+  const id: number = registered.body.id;
 
   if (role === "user") return { id, token: registered.body.accessToken };
 
   await app.get(DatabaseService).query("UPDATE users SET role = $1 WHERE id = $2", [role, id]);
   // Log in again: the role is inside the token.
-  const login = await http(app).post("/auth/login").send({ email, password }).expect(200);
+  const login = await http(app).post("/api/v1/auth/login").send({ email, password }).expect(200);
   return { id, token: login.body.accessToken };
 }
 

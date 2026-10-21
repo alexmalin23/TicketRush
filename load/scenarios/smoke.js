@@ -4,7 +4,7 @@ import { check } from "k6";
 import { request, login, resetEvent, testUser } from "../lib/api.js";
 import { report, routeThresholds, SUMMARY_TREND_STATS } from "../lib/report.js";
 
-const ROUTES = ["GET /health", "GET /ready", "POST /auth/login", "GET /auth/me"];
+const ROUTES = ["GET /health", "GET /ready", "POST /api/v1/auth/login", "GET /api/v1/me", "POST /api/v1/auth/logout"];
 
 export const options = {
   vus: 1,
@@ -32,8 +32,9 @@ export default function () {
 
   const email = testUser(1);
   const token = login(email);
-  check(request("GET", "/auth/me", { token }), {
+  check(request("GET", "/api/v1/me", { token }), {
     "me: 200": (r) => r.status === 200,
     "me: same user": (r) => r.json("email") === email,
   });
+  check(request("POST", "/api/v1/auth/logout", { token }), { "logout: 204": (r) => r.status === 204 });
 }

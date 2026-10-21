@@ -66,7 +66,6 @@ describe("AuthService", () => {
   it("logs in and never returns the hash", async () => {
     users.findByEmailWithPassword.mockResolvedValue({ ...user, passwordHash: await hashPassword("right") });
     const result = await service.login({ email: user.email, password: "right" });
-    expect(result.accessToken).toBe("token");
-    expect(result.user).not.toHaveProperty("passwordHash");
+    expect(result).toEqual({ id: user.id, email: user.email, accessToken: "token" }); // no hash, no role
   });
 });

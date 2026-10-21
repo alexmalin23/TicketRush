@@ -42,7 +42,7 @@ describe("Database & lifecycle (e2e)", () => {
     const pool = app.get<Pool>(PG_POOL);
 
     // Any route that queries the database; an unknown email still runs one SELECT.
-    const login = () => http(app).post("/auth/login").send({ email: "nobody@example.com", password: "x" });
+    const login = () => http(app).post("/api/v1/auth/login").send({ email: "nobody@example.com", password: "x" });
 
     const held = await pool.connect(); // take the only connection
     const res = await login().expect(503);
