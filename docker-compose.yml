@@ -6,6 +6,7 @@ x-app-env: &app-env
   # Local development value only; real environments inject a secret.
   JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
   LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
   ENABLE_DEV_ROUTES: ${ENABLE_DEV_ROUTES:-true}
 
 services:

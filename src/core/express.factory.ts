@@ -7,7 +7,7 @@ import { collectGuards } from "./decorators/use-guards.decorator";
 import { Container } from "./di/container";
 import { requestContext } from "./http/request-context";
 import { requestLogger } from "./http/request-logger";
-import { Logger, LogLevel, parseLogLevel } from "./logger/logger";
+import { Logger, LogFormat, LogLevel, parseLogFormat, parseLogLevel } from "./logger/logger";
 import { Provider, Type } from "./types";
 
 /**
@@ -30,6 +30,8 @@ export function defineApp(definition: AppDefinition): AppDefinition {
 export interface CreateOptions {
   /** Defaults to process.env.LOG_LEVEL, then "info". */
   logLevel?: LogLevel;
+  /** Defaults to process.env.LOG_FORMAT, then "text". */
+  logFormat?: LogFormat;
 }
 
 /**
@@ -47,7 +49,11 @@ export class ExpressFactory {
     options: CreateOptions = {}
   ): Promise<ModexApplication> {
 
-    const logger = new Logger(options.logLevel ?? parseLogLevel(process.env.LOG_LEVEL));
+    const logger = new Logger(
+      options.logLevel ?? parseLogLevel(process.env.LOG_LEVEL),
+      undefined,
+      options.logFormat ?? parseLogFormat(process.env.LOG_FORMAT)
+    );
 
     const expressApp = express();
     expressApp.disable("x-powered-by");

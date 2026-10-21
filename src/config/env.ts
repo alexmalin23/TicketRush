@@ -26,6 +26,8 @@ const EnvSchema = z.object({
   /** "*" or a comma separated list of allowed origins */
   CORS_ORIGIN: z.string().default("*"),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error", "silent"]).default("info"),
+  /** "json" in containers (one object per line, with requestId); "text" for local reading */
+  LOG_FORMAT: z.enum(["text", "json"]).default("text"),
 
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),
