@@ -7,6 +7,14 @@ import { PG_POOL } from "./database.constants";
 // Prices here are small, so we parse them to JS numbers globally.
 types.setTypeParser(types.builtins.NUMERIC, (value: string) => Number(value));
 
+// Same for BIGINT (ids of events, seats, venues): ids are numbers in the API, never strings.
+// They stay far below 2^53; failing loudly beats silently rounding an id.
+types.setTypeParser(types.builtins.INT8, (value: string) => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`BIGINT ${value} exceeds Number.MAX_SAFE_INTEGER`);
+  return parsed;
+});
+
 /**
  * ONE pool for the whole app, created at startup and shared by every Model.
  * Never create a Pool per request: each Pool opens its own connections.

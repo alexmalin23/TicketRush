@@ -24,7 +24,7 @@ describe("Dev routes (e2e)", () => {
       await resetDatabase(app);
       const { id: userId } = await createUser(app, "buyer@example.com");
       const q = <T extends object>(sql: string, values: unknown[] = []) =>
-        db.query<T & { id: string }>(sql, values).then((r) => r.rows[0]);
+        db.query<T & { id: number }>(sql, values).then((r) => r.rows[0]);
 
       // A dirty event: one seat held, one sold (order + payment + ticket), status soldout.
       const venue = await q("INSERT INTO venues (name) VALUES ('Arena') RETURNING id");
@@ -55,7 +55,7 @@ describe("Dev routes (e2e)", () => {
 
       await http(app)
         .post(`/api/v1/dev/events/${event.id}/reset`)
-        .expect(200, { eventId: Number(event.id), seatsAvailable: 2 });
+        .expect(200, { eventId: event.id, seatsAvailable: 2 });
 
       expect(await count("SELECT count(*) AS n FROM seats WHERE status <> 'available' OR held_by IS NOT NULL")).toBe(0);
       for (const table of ["orders", "order_items", "payments", "tickets"]) {
