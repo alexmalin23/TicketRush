@@ -176,9 +176,14 @@ describe("Router pipeline", () => {
   });
 
   it("turns HttpExceptions into JSON errors", async () => {
-    await api
-      .get("/items/fail/not-found")
-      .expect(404, { statusCode: 404, error: "Not Found", message: "nope" });
+    const res = await api.get("/items/fail/not-found").expect(404);
+    expect(res.body).toEqual({
+      statusCode: 404,
+      error: "Not Found",
+      code: "NOT_FOUND",
+      message: "nope",
+      requestId: res.headers["x-request-id"],
+    });
   });
 
   it("hides internal error messages behind a generic 500", async () => {
@@ -188,7 +193,8 @@ describe("Router pipeline", () => {
   });
 
   it("answers unknown routes with a JSON 404", async () => {
-    await api.get("/missing").expect(404, { statusCode: 404, error: "Not Found", message: "Cannot GET /missing" });
+    const res = await api.get("/missing").expect(404);
+    expect(res.body).toMatchObject({ statusCode: 404, code: "NOT_FOUND", message: "Cannot GET /missing" });
   });
 
   it("answers malformed JSON with 400", async () => {

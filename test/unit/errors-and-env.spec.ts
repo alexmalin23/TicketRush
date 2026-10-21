@@ -6,6 +6,7 @@ describe("toErrorBody", () => {
     expect(toErrorBody(new ConflictException("taken", { field: "email" }))).toEqual({
       statusCode: 409,
       error: "Conflict",
+      code: "CONFLICT",
       message: "taken",
       details: { field: "email" },
     });
@@ -28,6 +29,7 @@ describe("toErrorBody", () => {
     expect(toErrorBody(new Error("password=hunter2"))).toEqual({
       statusCode: 500,
       error: "Internal Server Error",
+      code: "INTERNAL",
       message: "Internal server error",
     });
     expect(toErrorBody(undefined).statusCode).toBe(500);

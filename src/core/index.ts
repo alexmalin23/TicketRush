@@ -9,6 +9,7 @@ export * from "./logger/logger";
 export * from "./exceptions/http-exceptions";
 export * from "./guards/can-activate";
 export { toErrorBody } from "./http/exception-handler";
+export { currentRequestId, REQUEST_ID_HEADER } from "./http/request-context";
 export type { ErrorBody } from "./http/exception-handler";
 export { Controller } from "./decorators/controller.decorator";
 export { Get, Post, Put, Patch, Delete } from "./decorators/route.decorator";

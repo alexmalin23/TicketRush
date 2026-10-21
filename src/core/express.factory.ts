@@ -5,6 +5,7 @@ import { CONTROLLER_PREFIX } from "./decorators/controller.decorator";
 import { ROUTES, RouteDefinition } from "./decorators/route.decorator";
 import { collectGuards } from "./decorators/use-guards.decorator";
 import { Container } from "./di/container";
+import { requestContext } from "./http/request-context";
 import { requestLogger } from "./http/request-logger";
 import { Logger, LogLevel, parseLogLevel } from "./logger/logger";
 import { Provider, Type } from "./types";
@@ -50,7 +51,9 @@ export class ExpressFactory {
 
     const expressApp = express();
     expressApp.disable("x-powered-by");
-    // Logger first, so even requests the JSON parser rejects (bad JSON) are logged.
+    // Request id first: every later middleware, log line and error carries it.
+    expressApp.use(requestContext());
+    // Logger next, so even requests the JSON parser rejects (bad JSON) are logged.
     expressApp.use(requestLogger(logger.child("HTTP")));
     expressApp.use(express.json({ limit: "1mb" }));
     // The same controller listed twice would register its routes twice.

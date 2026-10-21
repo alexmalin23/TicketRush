@@ -207,7 +207,7 @@ function validateRequest(req: Request, schemas: ValidationSchemas): void {
   }
 
   if (issues.length > 0) {
-    throw new BadRequestException("Validation failed", issues);
+    throw new BadRequestException("Validation failed", issues, "VALIDATION_ERROR");
   }
 
   if ("body" in parsed) req.body = parsed.body;
