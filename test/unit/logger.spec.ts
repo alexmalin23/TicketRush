@@ -61,6 +61,6 @@ describe("Logger", () => {
     const lines: string[] = [];
     jest.spyOn(console, "log").mockImplementation((line: string) => void lines.push(line));
     new Logger("info", "Seed").info("10000 seats");
-    expect(lines[0]).toMatch(/^\S+Z INFO  \[Seed\] 10000 seats$/);
+    expect(lines[0]).toMatch(/^\S+Z INFO {2}\[Seed\] 10000 seats$/);
   });
 });
