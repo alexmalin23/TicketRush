@@ -17,6 +17,8 @@ jobs:
   checks:
     name: Lint, typecheck, unit tests
     runs-on: ubuntu-latest
+    # A hung process must fail the check in minutes, not after GitHub's 6-hour default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -31,6 +33,7 @@ jobs:
   integration:
     name: Integration tests (Postgres 16, Redis 7)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Real databases, same versions as docker-compose.yml: correctness is never tested against mocks.
     services:
       postgres:
