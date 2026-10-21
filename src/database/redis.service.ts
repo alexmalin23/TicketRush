@@ -20,13 +20,19 @@ export class RedisService implements OnInit, OnShutdown {
   async onInit(): Promise<void> {
     // ioredis rejects with "Connection is closed." when the server refuses; say what failed.
     await this.client.connect().catch((error: Error) => {
-      throw new Error(`Redis is unreachable at startup: ${error.message}`);
+      throw new Error(`Redis is unreachable at startup: ${error.message}`, { cause: error });
     });
     this.logger.info("Connected to Redis");
   }
 
   async onShutdown(): Promise<void> {
-    await this.client.quit();
+    if (this.client.status === "ready") {
+      await this.client.quit(); // graceful: lets in-flight replies arrive
+    } else {
+      // Startup failed or the server is gone. QUIT would open a connection just to send it
+      // (lazyConnect) or wait behind endless reconnect attempts; drop the socket and timers.
+      this.client.disconnect();
+    }
     this.logger.info("Redis connection closed");
   }
 }
