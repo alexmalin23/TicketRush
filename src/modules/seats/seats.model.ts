@@ -10,6 +10,16 @@ import { DatabaseService } from "../../database/database.service";
  */
 export const SEAT_IS_AVAILABLE = `(status = 'available' OR (status = 'held' AND held_until < now()))`;
 
+/**
+ * Its exact complement for held seats: a hold that still counts. Together the two rules leave no
+ * instant where a seat is neither available nor held.
+ *
+ * now() is the start time of the current transaction, not the wall clock. Inside a transaction that
+ * waited for a lock, a hold that expired during the wait still counts as active: the error is always
+ * on the safe side (a seat frees up slightly late, never early).
+ */
+export const HOLD_IS_ACTIVE = `(status = 'held' AND held_until >= now())`;
+
 export interface SectionAvailability {
   name: string;
   available: number;
@@ -110,12 +120,44 @@ export class SeatsModel {
     const { rows } = await db.query<{ count: number }>(
       `SELECT
        (SELECT count(*) FROM seats
-         WHERE event_id = $1 AND status = 'held' AND held_by = $2 AND held_until > now())
+         WHERE event_id = $1 AND held_by = $2 AND ${HOLD_IS_ACTIVE})
      + (SELECT count(*) FROM order_items i JOIN orders o ON o.id = i.order_id
          WHERE o.event_id = $1 AND o.user_id = $2 AND o.status IN ('paid', 'issued'))
      AS count`,
       [eventId, userId]
     );
     return rows[0].count;
+  }
+
+  /** The buyer's active holds in the event, earliest expiry first. */
+  async activeHoldsOf(eventId: number, userId: number, db: Queryable = this.database): Promise<HeldSeat[]> {
+    const { rows } = await db.query<HeldSeat>(
+      `SELECT id, section, row_label AS "row", number, price_cents AS "priceCents", held_until AS "heldUntil"
+         FROM seats
+        WHERE event_id = $1 AND held_by = $2 AND ${HOLD_IS_ACTIVE}
+        ORDER BY held_until, id`,
+      [eventId, userId]
+    );
+    return rows;
+  }
+
+  /**
+   * Releases the buyer's holds (all of them, or only `seatIds`): the seats are available again
+   * the moment this commits. Seats held by someone else are never touched. Returns the count.
+   */
+  async releaseHoldsOf(
+    eventId: number,
+    userId: number,
+    seatIds: number[] | null,
+    db: Queryable = this.database
+  ): Promise<number> {
+    const { rowCount } = await db.query(
+      `UPDATE seats
+          SET status = 'available', held_by = NULL, held_until = NULL
+        WHERE event_id = $1 AND held_by = $2 AND status = 'held'
+          AND ($3::bigint[] IS NULL OR id = ANY($3::bigint[]))`,
+      [eventId, userId, seatIds]
+    );
+    return rowCount ?? 0;
   }
 }

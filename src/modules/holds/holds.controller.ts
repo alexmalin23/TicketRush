@@ -1,9 +1,9 @@
 import type { Request } from "express";
-import { Controller, Post, UseGuards, Validate } from "../../core";
+import { Controller, Delete, Get, HttpCode, Post, UseGuards, Validate } from "../../core";
 import { API_PREFIX } from "../../common/api";
 import { AuthGuard } from "../../common/guards/auth.guard";
 import { IdParams, IdParamsSchema } from "../../common/validators/common.schemas";
-import { CreateHoldInput, CreateHoldSchema } from "./holds.schemas";
+import { CreateHoldInput, CreateHoldSchema, ReleaseHoldsInput, ReleaseHoldsSchema } from "./holds.schemas";
 import { HoldsService } from "./holds.service";
 
 @Controller(`${API_PREFIX}/events`)
@@ -15,5 +15,18 @@ export class HoldsController {
   @Validate({ params: IdParamsSchema, body: CreateHoldSchema })
   create(req: Request<IdParams, unknown, CreateHoldInput>) {
     return this.holdsService.hold(req.params.id, req.user!.id, req.body.seatIds);
+  }
+
+  @Get("/:id/holds/me")
+  @Validate({ params: IdParamsSchema })
+  mine(req: Request<IdParams>) {
+    return this.holdsService.myHolds(req.params.id, req.user!.id);
+  }
+
+  @Delete("/:id/holds/me")
+  @HttpCode(204)
+  @Validate({ params: IdParamsSchema, body: ReleaseHoldsSchema })
+  async release(req: Request<IdParams, unknown, ReleaseHoldsInput>) {
+    await this.holdsService.release(req.params.id, req.user!.id, req.body.seatIds ?? null);
   }
 }

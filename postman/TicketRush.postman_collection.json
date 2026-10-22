@@ -398,6 +398,86 @@
             },
             "description": "Requires login. Body `{ seatIds }` (1-6 distinct ids). All-or-nothing: either every seat is held or none. 201 `{ seats: [{ id, section, row, number, priceCents }], expiresAt }`. 409 `SEAT_UNAVAILABLE` with `details.seatIds` (the seats that could not be taken), 409 `HOLD_LIMIT_EXCEEDED` with `details { limit, owned, requested }` (held + bought seats per buyer per event), 409 `EVENT_NOT_ON_SALE`, 404 unknown event, 400 `VALIDATION_ERROR`. Repeated holds add seats and do not extend earlier ones. Seat map saves the first available seat as `seatId`."
           }
+        },
+        {
+          "name": "My holds",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/holds/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "holds",
+                "me"
+              ]
+            },
+            "description": "Requires login. 200 `{ seats: [{ id, section, row, number, priceCents, expiresAt }], expiresAt }`: the buyer's active holds, earliest expiry first. Holds are additive and never extended, so each seat has its own `expiresAt`; the top-level `expiresAt` is the next one to expire (null when nothing is held). 404 unknown event."
+          }
+        },
+        {
+          "name": "Release all my holds",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/holds/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "holds",
+                "me"
+              ]
+            },
+            "description": "Requires login. 204. Releases every seat the buyer holds in the event; the seats are available immediately. Idempotent: nothing held is still 204. Never touches other buyers' seats."
+          }
+        },
+        {
+          "name": "Release some of my holds",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/holds/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "holds",
+                "me"
+              ]
+            },
+            "description": "Requires login. Body `{ seatIds }` (1-50). 204. Releases only these seats, and only if this buyer holds them. 400 `VALIDATION_ERROR` for an empty list.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seatIds\": [{{seatId}}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
         }
       ]
     },

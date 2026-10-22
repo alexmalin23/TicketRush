@@ -14,6 +14,8 @@ const ROUTES = [
   "POST /api/v1/auth/login",
   "GET /api/v1/me",
   "POST /api/v1/events/:id/holds",
+  "GET /api/v1/events/:id/holds/me",
+  "DELETE /api/v1/events/:id/holds/me",
   "POST /api/v1/auth/logout",
 ];
 
@@ -67,6 +69,16 @@ export default function () {
   check(request("POST", `/api/v1/events/${EVENT_ID}/holds`, { token, body: { seatIds: [seatId] }, name: "POST /api/v1/events/:id/holds" }), {
     "hold: 201": (r) => r.status === 201,
     "hold: the requested seat": (r) => r.json("seats.0.id") === seatId,
+  });
+
+  check(request("GET", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "GET /api/v1/events/:id/holds/me" }), {
+    "my holds: the seat just held": (r) => r.json("seats.0.id") === seatId,
+  });
+  check(request("DELETE", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "DELETE /api/v1/events/:id/holds/me" }), {
+    "release: 204": (r) => r.status === 204,
+  });
+  check(request("GET", `/api/v1/events/${EVENT_ID}/availability`, { name: "GET /api/v1/events/:id/availability" }), {
+    "release: all 10,000 seats free again": (r) => r.json("sections").reduce((sum, s) => sum + s.available, 0) === 10000,
   });
 
   check(request("POST", "/api/v1/auth/logout", { token }), { "logout: 204": (r) => r.status === 204 });

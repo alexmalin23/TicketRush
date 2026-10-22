@@ -163,4 +163,91 @@ describe("Holds (e2e)", () => {
       expect((await hold(s.tokens[0], [s.seatIds[0]]).expect(409)).body.code).toBe("EVENT_NOT_ON_SALE");
     });
   });
+  describe("GET and DELETE /events/:id/holds/me", () => {
+    let app: ModexApplication;
+    let db: DatabaseService;
+    let s: Scenario;
+    let hold: ReturnType<typeof holdRequest>;
+    const mine = (token: string) => http(app).get(`${API}/events/${s.eventId}/holds/me`).set(bearer(token));
+    const release = (token: string, body?: object) => {
+      const req = http(app).delete(`${API}/events/${s.eventId}/holds/me`).set(bearer(token));
+      return body ? req.send(body) : req;
+    };
+    const statusInMap = async (seatId: number) => {
+      const res = await http(app).get(`${API}/events/${s.eventId}/seats?section=A`).expect(200);
+      return res.body.seats.find((seat: { id: number }) => seat.id === seatId).status;
+    };
+
+    beforeAll(async () => {
+      app = await createTestApp();
+      db = app.get(DatabaseService);
+    });
+    afterAll(() => app.close());
+    beforeEach(async () => {
+      s = await buildScenario(app, 6, 2);
+      hold = holdRequest(app, s.eventId);
+    });
+
+    it("lists only the buyer's active holds, each with its own expiry", async () => {
+      await hold(s.tokens[0], [s.seatIds[0]]).expect(201);
+      await hold(s.tokens[0], [s.seatIds[1]]).expect(201);
+      await hold(s.tokens[1], [s.seatIds[2]]).expect(201); // someone else's
+      await db.query(
+        "UPDATE seats SET status = 'held', held_by = $2, held_until = now() - interval '1 second' WHERE id = $1",
+        [s.seatIds[3], s.userIds[0]]
+      ); // expired: no longer counts
+
+      const res = await mine(s.tokens[0]).expect(200);
+      expect(res.body.seats.map((seat: { id: number }) => seat.id)).toEqual([s.seatIds[0], s.seatIds[1]]);
+      expect(res.body.seats[0]).toEqual({
+        id: s.seatIds[0], section: "A", row: "1", number: 1, priceCents: 45000, expiresAt: expect.any(String),
+      });
+      expect(res.body.expiresAt).toBe(res.body.seats[0].expiresAt); // the next one to expire
+    });
+
+    it("returns an empty list and a null expiry when nothing is held", async () => {
+      await mine(s.tokens[0]).expect(200, { seats: [], expiresAt: null });
+    });
+
+    it("releasing everything frees the seats immediately, for the map and for other buyers", async () => {
+      await hold(s.tokens[0], [s.seatIds[0], s.seatIds[1]]).expect(201);
+      expect(await statusInMap(s.seatIds[0])).toBe("unavailable");
+
+      await release(s.tokens[0]).expect(204);
+
+      expect(await statusInMap(s.seatIds[0])).toBe("available");
+      expect(await statusInMap(s.seatIds[1])).toBe("available");
+      await hold(s.tokens[1], [s.seatIds[0], s.seatIds[1]]).expect(201);
+    });
+
+    it("releases only the listed seats, and never another buyer's", async () => {
+      await hold(s.tokens[0], [s.seatIds[0], s.seatIds[1]]).expect(201);
+      await hold(s.tokens[1], [s.seatIds[2]]).expect(201);
+
+      await release(s.tokens[0], { seatIds: [s.seatIds[0], s.seatIds[2]] }).expect(204);
+
+      expect(await statusInMap(s.seatIds[0])).toBe("available");
+      expect(await statusInMap(s.seatIds[1])).toBe("unavailable"); // not listed
+      expect(await statusInMap(s.seatIds[2])).toBe("unavailable"); // buyer 1's seat
+    });
+
+    it("is idempotent: releasing twice, or nothing held, still answers 204", async () => {
+      await hold(s.tokens[0], [s.seatIds[0]]).expect(201);
+      await release(s.tokens[0]).expect(204);
+      await release(s.tokens[0]).expect(204);
+    });
+
+    it("frees the per-buyer limit too", async () => {
+      await hold(s.tokens[0], s.seatIds.slice(0, 6)).expect(201);
+      await release(s.tokens[0], { seatIds: [s.seatIds[5]] }).expect(204);
+      await hold(s.tokens[0], [s.seatIds[5]]).expect(201);
+    });
+
+    it("requires a login, a known event and valid input", async () => {
+      await http(app).get(`${API}/events/${s.eventId}/holds/me`).expect(401);
+      await http(app).delete(`${API}/events/${s.eventId}/holds/me`).expect(401);
+      await http(app).get(`${API}/events/999999/holds/me`).set(bearer(s.tokens[0])).expect(404);
+      expect((await release(s.tokens[0], { seatIds: [] }).expect(400)).body.code).toBe("VALIDATION_ERROR");
+    });
+  });
 });

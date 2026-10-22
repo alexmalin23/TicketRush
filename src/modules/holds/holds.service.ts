@@ -9,6 +9,13 @@ export interface HoldResult {
   expiresAt: Date;
 }
 
+/** Holds are additive and never extended, so each seat keeps its own expiry. */
+export interface MyHolds {
+  seats: (Omit<HeldSeat, "heldUntil"> & { expiresAt: Date })[];
+  /** The next seat to expire, or null when the buyer holds nothing. */
+  expiresAt: Date | null;
+}
+
 @Injectable()
 export class HoldsService {
   constructor(
@@ -67,9 +74,29 @@ export class HoldsService {
     });
   }
 
-  private async requireOnSale(eventId: number) {
+  async myHolds(eventId: number, userId: number): Promise<MyHolds> {
+    await this.requireEvent(eventId);
+    const held = await this.seatsModel.activeHoldsOf(eventId, userId);
+    return {
+      seats: held.map(({ heldUntil, ...seat }) => ({ ...seat, expiresAt: heldUntil })),
+      expiresAt: held[0]?.heldUntil ?? null,
+    };
+  }
+
+  /** Idempotent: releasing seats the buyer does not hold (anymore) is not an error. */
+  async release(eventId: number, userId: number, seatIds: number[] | null): Promise<void> {
+    await this.requireEvent(eventId);
+    await this.seatsModel.releaseHoldsOf(eventId, userId, seatIds);
+  }
+
+  private async requireEvent(eventId: number) {
     const event = await this.eventsModel.findById(eventId);
     if (!event) throw new NotFoundException(`Event ${eventId} not found`);
+    return event;
+  }
+
+  private async requireOnSale(eventId: number) {
+    const event = await this.requireEvent(eventId);
     if (event.status !== "onsale" || event.onsaleAt > new Date()) {
       throw new ConflictException("Event is not on sale", { status: event.status, onsaleAt: event.onsaleAt }, "EVENT_NOT_ON_SALE");
     }
