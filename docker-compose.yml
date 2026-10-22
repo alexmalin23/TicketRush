@@ -1,5 +1,7 @@
-# The whole stack with one command: `docker compose up -d --build`
-# (Postgres + Redis only, for running the API from the host: `docker compose up -d postgres redis`)
+# Local development (API on the host with `npm run dev`): `docker compose up -d`
+#   → Postgres + Redis only.
+# Whole stack in containers (load tests, demos): `docker compose --profile full up -d --build`
+#   → also runs migrations and the API (host port 3080). `npm run load` does this on its own.
 x-app-env: &app-env
   DATABASE_URL: postgres://postgres:postgres@postgres:5432/modex
   REDIS_URL: redis://redis:6379
@@ -45,6 +47,7 @@ services:
   # One-shot: applies pending migrations, then exits. An advisory lock makes it
   # safe even if several of these run at once.
   migrate:
+    profiles: [full]
     build: .
     image: ticketrush-api
     command: ["node", "dist/database/migrate.js"]
@@ -54,13 +57,16 @@ services:
         condition: service_healthy
 
   api:
+    profiles: [full]
     build: .
     image: ticketrush-api
     environment:
       <<: *app-env
       PORT: 3000
     ports:
-      - "127.0.0.1:3000:3000"
+      # Host port 3080, not 3000: `npm run dev` owns 3000 on the host, and two servers on one
+      # port silently split requests by address family. k6 uses api:3000 inside the network.
+      - "127.0.0.1:3080:3000"
     depends_on:
       migrate:
         condition: service_completed_successfully

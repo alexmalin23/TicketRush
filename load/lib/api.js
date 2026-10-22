@@ -40,3 +40,37 @@ export function resetEvent(eventId = EVENT_ID) {
   }
   return res.json();
 }
+
+/**
+ * Logs in users 1..count in parallel batches (setup only). scrypt makes each login cost ~50 ms
+ * of server CPU, so this belongs in setup(), never in the measured part of a scenario.
+ */
+export function loginMany(count, batchSize = 50) {
+  const tokens = [];
+  for (let start = 1; start <= count; start += batchSize) {
+    const batch = [];
+    for (let n = start; n < Math.min(start + batchSize, count + 1); n++) {
+      batch.push([
+        "POST",
+        `${BASE_URL}/api/v1/auth/login`,
+        JSON.stringify({ email: testUser(n), password: USER_PASSWORD }),
+        { headers: { "Content-Type": "application/json" }, tags: { name: "POST /api/v1/auth/login", phase: "setup" } },
+      ]);
+    }
+    for (const res of http.batch(batch)) {
+      if (res.status !== 200) fail(`login failed: ${res.status} ${res.body}`);
+      tokens.push(res.json("accessToken"));
+    }
+  }
+  return tokens;
+}
+
+/** Id of the first seat (row 1, number 1) of a section. */
+export function firstSeatId(section = "A", eventId = EVENT_ID) {
+  const res = request("GET", `/api/v1/events/${eventId}/seats?section=${section}`, {
+    name: "GET /api/v1/events/:id/seats",
+    phase: "setup",
+  });
+  if (res.status !== 200) fail(`seat map failed: ${res.status} ${res.body}`);
+  return res.json("seats.0.id");
+}

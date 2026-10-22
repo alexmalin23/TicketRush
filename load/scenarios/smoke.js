@@ -13,6 +13,7 @@ const ROUTES = [
   "GET /api/v1/events/:id/seats",
   "POST /api/v1/auth/login",
   "GET /api/v1/me",
+  "POST /api/v1/events/:id/holds",
   "POST /api/v1/auth/logout",
 ];
 
@@ -59,5 +60,14 @@ export default function () {
     "me: 200": (r) => r.status === 200,
     "me: same user": (r) => r.json("email") === email,
   });
+
+  // Hold the first seat of section A (the event was reset in setup, so it is free).
+  const seatMap = request("GET", `/api/v1/events/${EVENT_ID}/seats?section=A`, { name: "GET /api/v1/events/:id/seats" });
+  const seatId = seatMap.json("seats.0.id");
+  check(request("POST", `/api/v1/events/${EVENT_ID}/holds`, { token, body: { seatIds: [seatId] }, name: "POST /api/v1/events/:id/holds" }), {
+    "hold: 201": (r) => r.status === 201,
+    "hold: the requested seat": (r) => r.json("seats.0.id") === seatId,
+  });
+
   check(request("POST", "/api/v1/auth/logout", { token }), { "logout: 204": (r) => r.status === 204 });
 }

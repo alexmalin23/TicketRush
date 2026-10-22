@@ -30,9 +30,19 @@ export interface SeatView {
   status: "available" | "unavailable";
 }
 
+/** A seat as returned to its holder. */
+export interface HeldSeat {
+  id: number;
+  section: string;
+  row: string;
+  number: number;
+  priceCents: number;
+  heldUntil: Date;
+}
+
 @Injectable()
 export class SeatsModel {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(private readonly database: DatabaseService) { }
 
   async availabilityByEvent(eventId: number, db: Queryable = this.database): Promise<SectionAvailability[]> {
     const { rows } = await db.query<SectionAvailability>(
@@ -71,5 +81,41 @@ export class SeatsModel {
       [eventId, section]
     );
     return rows;
+  }
+
+  /**
+   * Takes only the seats that are still available at the moment of the write: the check and the
+   * write are one statement, so a seat taken an instant earlier by someone else just does not match.
+   * Returns the rows it actually took (possibly fewer than requested).
+   */
+  async holdSeatsIfAvailable(
+    eventId: number,
+    seatIds: number[],
+    userId: number,
+    ttlSeconds: number,
+    db: Queryable = this.database
+  ): Promise<HeldSeat[]> {
+    const { rows } = await db.query<HeldSeat>(
+      `UPDATE seats
+        SET status = 'held', held_by = $3, held_until = now() + make_interval(secs => $4)
+      WHERE event_id = $1 AND id = ANY($2::bigint[]) AND ${SEAT_IS_AVAILABLE}
+      RETURNING id, section, row_label AS "row", number, price_cents AS "priceCents", held_until AS "heldUntil"`,
+      [eventId, seatIds, userId, ttlSeconds]
+    );
+    return rows;
+  }
+
+  /** Seats this user holds (unexpired) or has bought in the event: what the per-user limit counts. */
+  async countUserSeats(eventId: number, userId: number, db: Queryable = this.database): Promise<number> {
+    const { rows } = await db.query<{ count: number }>(
+      `SELECT
+       (SELECT count(*) FROM seats
+         WHERE event_id = $1 AND status = 'held' AND held_by = $2 AND held_until > now())
+     + (SELECT count(*) FROM order_items i JOIN orders o ON o.id = i.order_id
+         WHERE o.event_id = $1 AND o.user_id = $2 AND o.status IN ('paid', 'issued'))
+     AS count`,
+      [eventId, userId]
+    );
+    return rows[0].count;
   }
 }

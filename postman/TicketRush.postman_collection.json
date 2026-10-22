@@ -42,6 +42,10 @@
     {
       "key": "section",
       "value": "A"
+    },
+    {
+      "key": "seatId",
+      "value": ""
     }
   ],
   "item": [
@@ -340,6 +344,59 @@
             "auth": {
               "type": "noauth"
             }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const free = pm.response.json().seats.find((s) => s.status === 'available');",
+                  "if (free) pm.collectionVariables.set('seatId', free.id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Holds",
+      "item": [
+        {
+          "name": "Hold seats",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/holds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "holds"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seatIds\": [\n    {{seatId}}\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Requires login. Body `{ seatIds }` (1-6 distinct ids). All-or-nothing: either every seat is held or none. 201 `{ seats: [{ id, section, row, number, priceCents }], expiresAt }`. 409 `SEAT_UNAVAILABLE` with `details.seatIds` (the seats that could not be taken), 409 `HOLD_LIMIT_EXCEEDED` with `details { limit, owned, requested }` (held + bought seats per buyer per event), 409 `EVENT_NOT_ON_SALE`, 404 unknown event, 400 `VALIDATION_ERROR`. Repeated holds add seats and do not extend earlier ones. Seat map saves the first available seat as `seatId`."
           }
         }
       ]

@@ -41,6 +41,13 @@ function thresholdLines(data) {
   return lines.length ? lines : ["- (none)"];
 }
 
+/** Scenario-specific counters (e.g. holds_succeeded) are the correctness numbers of a run. */
+function counterLines(data) {
+  return Object.entries(data.metrics)
+    .filter(([name, metric]) => metric.type === "counter" && !/^(http_|data_|iterations)/.test(name))
+    .map(([name, metric]) => `- **${name}:** ${metric.values.count}`);
+}
+
 function markdown(scenario, routes, data) {
   const env = (key) => __ENV[key] || "unknown";
   const seconds = data.state.testRunDurationMs / 1000;
@@ -54,6 +61,7 @@ function markdown(scenario, routes, data) {
     // vus_max is only sampled in runs longer than ~1 s.
     `- **Duration:** ${seconds.toFixed(1)} s${vusMax ? `, max ${vusMax} VUs` : ""}`,
     `- **Checks:** ${checks ? `${checks.passes}/${checks.passes + checks.fails} passed` : "none"}`,
+    ...counterLines(data),
     "",
     "## Machine",
     "",

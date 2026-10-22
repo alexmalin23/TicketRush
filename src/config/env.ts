@@ -29,6 +29,8 @@ const EnvSchema = z.object({
   /** "json" in containers (one object per line, with requestId); "text" for local reading */
   LOG_FORMAT: z.enum(["text", "json"]).default("text"),
 
+  HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),
 });

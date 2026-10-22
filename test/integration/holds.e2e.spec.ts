@@ -1,0 +1,166 @@
+import { ModexApplication } from "../../src/core";
+import { DatabaseService } from "../../src/database/database.service";
+import { DUMMY_HASH } from "../../src/modules/auth/password";
+import { TokenService } from "../../src/modules/auth/token.service";
+import { bearer, createTestApp, http, resetDatabase } from "../helpers/test-app";
+
+const API = "/api/v1";
+const BUYERS = 50;
+
+interface Scenario {
+  eventId: number;
+  seatIds: number[];
+  tokens: string[];
+  userIds: number[];
+}
+
+/** One on-sale event with `seats` seats in section A and `buyers` users with signed tokens. */
+async function buildScenario(app: ModexApplication, seats: number, buyers: number): Promise<Scenario> {
+  await resetDatabase(app);
+  const db = app.get(DatabaseService);
+  // Buyers inserted directly and signed locally: N logins would only measure scrypt.
+  const users = await db.query<{ id: number; email: string }>(
+    `INSERT INTO users (email, password_hash)
+     SELECT 'buyer' || n || '@test.local', $1 FROM generate_series(1, $2::int) n RETURNING id, email`,
+    [DUMMY_HASH, buyers]
+  );
+  const signer = app.get(TokenService);
+  const venue = await db.query<{ id: number }>("INSERT INTO venues (name) VALUES ('Arena') RETURNING id");
+  const eventId = (
+    await db.query<{ id: number }>(
+      `INSERT INTO events (venue_id, name, starts_at, onsale_at, status)
+       VALUES ($1, 'Big Concert', now() + interval '30 days', now() - interval '1 minute', 'onsale') RETURNING id`,
+      [venue.rows[0].id]
+    )
+  ).rows[0].id;
+  const seatIds = (
+    await db.query<{ id: number }>(
+      `INSERT INTO seats (event_id, section, row_label, number, price_cents)
+       SELECT $1, 'A', '1', n, 45000 FROM generate_series(1, $2::int) n ORDER BY n RETURNING id`,
+      [eventId, seats]
+    )
+  ).rows.map((r) => r.id);
+  return {
+    eventId,
+    seatIds,
+    userIds: users.rows.map((u) => u.id),
+    tokens: users.rows.map((u) => signer.sign({ id: u.id, email: u.email, role: "user" })),
+  };
+}
+
+const holdRequest = (app: ModexApplication, eventId: number) => (token: string, ids: number[]) =>
+  http(app).post(`${API}/events/${eventId}/holds`).set(bearer(token)).send({ seatIds: ids });
+
+describe("Holds (e2e)", () => {
+  describe("POST /events/:id/holds", () => {
+    let app: ModexApplication;
+    let db: DatabaseService;
+    let s: Scenario;
+    let hold: ReturnType<typeof holdRequest>;
+
+    beforeAll(async () => {
+      app = await createTestApp();
+      db = app.get(DatabaseService);
+    });
+    afterAll(() => app.close());
+    beforeEach(async () => {
+      s = await buildScenario(app, 12, BUYERS);
+      hold = holdRequest(app, s.eventId);
+    });
+
+    const holderOf = async (seatId: number) =>
+      (await db.query<{ status: string; held_by: number | null }>("SELECT status, held_by FROM seats WHERE id = $1", [seatId])).rows[0];
+
+    it("holds free seats and returns them with an expiry", async () => {
+      const res = await hold(s.tokens[0], [s.seatIds[0], s.seatIds[1]]).expect(201);
+      expect(res.body.seats.map((seat: { id: number }) => seat.id).sort()).toEqual([s.seatIds[0], s.seatIds[1]].sort());
+      expect(res.body.seats[0]).toEqual({ id: expect.any(Number), section: "A", row: "1", number: expect.any(Number), priceCents: 45000 });
+      const ttl = (new Date(res.body.expiresAt).getTime() - Date.now()) / 1000;
+      expect(ttl).toBeGreaterThan(590);
+      expect(ttl).toBeLessThanOrEqual(600);
+    });
+
+    it(`${BUYERS} concurrent buyers, one seat: exactly one success`, async () => {
+      const results = await Promise.all(s.tokens.map((token) => hold(token, [s.seatIds[0]])));
+      const winners = results.filter((r) => r.status === 201);
+      const losers = results.filter((r) => r.status === 409 && r.body.code === "SEAT_UNAVAILABLE");
+
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(BUYERS - 1);
+      // The database agrees with the one buyer who was told "yours".
+      const winnerIndex = results.indexOf(winners[0]);
+      expect((await holderOf(s.seatIds[0])).held_by).toBe(s.userIds[winnerIndex]);
+    });
+
+    it("all-or-nothing: one unavailable seat means nothing is held", async () => {
+      await hold(s.tokens[0], [s.seatIds[1]]).expect(201);
+
+      const res = await hold(s.tokens[1], [s.seatIds[0], s.seatIds[1], s.seatIds[2]]).expect(409);
+      expect(res.body).toMatchObject({ code: "SEAT_UNAVAILABLE", details: { seatIds: [s.seatIds[1]] } });
+      expect((await holderOf(s.seatIds[0])).status).toBe("available");
+      expect((await holderOf(s.seatIds[2])).status).toBe("available");
+    });
+
+    it("overlapping requests in opposite order never deadlock and never split a pair", async () => {
+      const [a, b] = s.seatIds;
+      const results = await Promise.all(
+        s.tokens.map((token, i) => hold(token, i % 2 === 0 ? [a, b] : [b, a]))
+      );
+
+      expect(results.every((r) => r.status === 201 || r.status === 409)).toBe(true); // no 500 (deadlock)
+      expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+      const [holderA, holderB] = [await holderOf(a), await holderOf(b)];
+      expect(holderA.held_by).toBe(holderB.held_by); // both seats went to the same buyer
+    });
+
+    it("an expired hold can be taken by someone else", async () => {
+      await db.query(
+        "UPDATE seats SET status = 'held', held_by = $2, held_until = now() - interval '1 second' WHERE id = $1",
+        [s.seatIds[0], s.userIds[0]]
+      );
+      await hold(s.tokens[1], [s.seatIds[0]]).expect(201);
+      expect((await holderOf(s.seatIds[0])).held_by).toBe(s.userIds[1]);
+    });
+
+    it("repeated holds are additive and do not extend earlier ones", async () => {
+      await hold(s.tokens[0], [s.seatIds[0]]).expect(201);
+      const first = (await db.query<{ held_until: Date }>("SELECT held_until FROM seats WHERE id = $1", [s.seatIds[0]])).rows[0];
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await hold(s.tokens[0], [s.seatIds[1]]).expect(201);
+
+      const after = (await db.query<{ held_until: Date }>("SELECT held_until FROM seats WHERE id = $1", [s.seatIds[0]])).rows[0];
+      expect(after.held_until).toEqual(first.held_until);
+      expect((await holderOf(s.seatIds[1])).held_by).toBe(s.userIds[0]);
+    });
+
+    it("per-user limit: 409 HOLD_LIMIT_EXCEEDED beyond max_seats_per_user", async () => {
+      await hold(s.tokens[0], s.seatIds.slice(0, 5)).expect(201);
+
+      const res = await hold(s.tokens[0], s.seatIds.slice(5, 7)).expect(409);
+      expect(res.body).toMatchObject({ code: "HOLD_LIMIT_EXCEEDED", details: { limit: 6, owned: 5, requested: 2 } });
+      expect((await holderOf(s.seatIds[5])).status).toBe("available");
+
+      await hold(s.tokens[0], [s.seatIds[5]]).expect(201); // exactly at the limit is fine
+    });
+
+    it("per-user limit holds under concurrency: one buyer, six parallel requests of two seats", async () => {
+      const pairs = [0, 2, 4, 6, 8, 10].map((i) => [s.seatIds[i], s.seatIds[i + 1]]);
+      const results = await Promise.all(pairs.map((pair) => hold(s.tokens[0], pair)));
+
+      expect(results.filter((r) => r.status === 201)).toHaveLength(3);
+      expect(results.filter((r) => r.status === 409 && r.body.code === "HOLD_LIMIT_EXCEEDED")).toHaveLength(3);
+      const owned = await db.query("SELECT 1 FROM seats WHERE held_by = $1 AND status = 'held'", [s.userIds[0]]);
+      expect(owned.rowCount).toBe(6);
+    });
+
+    it("requires a login, valid input and an event that is on sale", async () => {
+      await http(app).post(`${API}/events/${s.eventId}/holds`).send({ seatIds: [s.seatIds[0]] }).expect(401);
+      expect((await hold(s.tokens[0], []).expect(400)).body.code).toBe("VALIDATION_ERROR");
+      expect((await hold(s.tokens[0], [1, 2, 3, 4, 5, 6, 7]).expect(400)).body.code).toBe("VALIDATION_ERROR");
+      await holdRequest(app, 999999)(s.tokens[0], [s.seatIds[0]]).expect(404);
+
+      await db.query("UPDATE events SET status = 'draft' WHERE id = $1", [s.eventId]);
+      expect((await hold(s.tokens[0], [s.seatIds[0]]).expect(409)).body.code).toBe("EVENT_NOT_ON_SALE");
+    });
+  });
+});

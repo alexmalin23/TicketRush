@@ -24,7 +24,7 @@ docker_info="$d_cpus CPUs, $(( d_mem / 1024 / 1024 / 1024 )) GB, Docker $d_versi
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (uncommitted changes)')"
 
 mkdir -p load/results
-docker compose run --rm \
+docker compose --profile full --profile load run --rm \
   -e MACHINE_HOST="$(uname -sm)" \
   -e MACHINE_CPU="$cpu" \
   -e MACHINE_MEMORY="$memory" \
