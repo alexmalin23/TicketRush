@@ -31,6 +31,11 @@ const EnvSchema = z.object({
 
   HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 
+  /** The card processor (a mock provider in this project, see src/payments-provider). */
+  PAYMENTS_PROVIDER_URL: z.url().default("http://localhost:3100"),
+  /** How long a charge may take before its outcome is treated as unknown. */
+  PAYMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),
 });

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "ts-node-dev --respawn src/main.ts",
+    "dev:payments": "ts-node-dev --respawn src/payments-provider/main.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/main.js",
     "lint": "eslint .",

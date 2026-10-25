@@ -56,6 +56,29 @@ services:
       postgres:
         condition: service_healthy
 
+  # Mock card processor: an external system from the API's point of view (own process, own state).
+  payments:
+    profiles: [full]
+    build: .
+    image: ticketrush-api
+    command: ["node", "dist/payments-provider/main.js"]
+    environment:
+      PAYMENTS_PROVIDER_PORT: 3100
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      MOCK_PAYMENT_LATENCY_MS_MIN: ${MOCK_PAYMENT_LATENCY_MS_MIN:-300}
+      MOCK_PAYMENT_LATENCY_MS_MAX: ${MOCK_PAYMENT_LATENCY_MS_MAX:-1500}
+      MOCK_PAYMENT_FAILURE_RATE: ${MOCK_PAYMENT_FAILURE_RATE:-0.1}
+      MOCK_PAYMENT_TIMEOUT_RATE: ${MOCK_PAYMENT_TIMEOUT_RATE:-0.02}
+    ports:
+      # 3180 on the host, like the API's 3080: `npm run dev:payments` owns 3100 locally.
+      - "127.0.0.1:3180:3100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3100/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   api:
     profiles: [full]
     build: .
@@ -63,6 +86,7 @@ services:
     environment:
       <<: *app-env
       PORT: 3000
+      PAYMENTS_PROVIDER_URL: http://payments:3100
     ports:
       # Host port 3080, not 3000: `npm run dev` owns 3000 on the host, and two servers on one
       # port silently split requests by address family. k6 uses api:3000 inside the network.
@@ -71,6 +95,8 @@ services:
       migrate:
         condition: service_completed_successfully
       redis:
+        condition: service_healthy
+      payments:
         condition: service_healthy
     healthcheck:
       # Liveness only: a database outage must not mark API instances unhealthy.
