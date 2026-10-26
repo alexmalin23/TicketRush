@@ -17,6 +17,8 @@ const ROUTES = [
   "GET /api/v1/events/:id/holds/me",
   "POST /api/v1/orders",
   "GET /api/v1/orders/:id",
+  "GET /api/v1/orders/:id/tickets",
+  "GET /api/v1/dev/events/:id/invariants",
   "DELETE /api/v1/events/:id/holds/me",
   "POST /api/v1/auth/logout",
 ];
@@ -33,6 +35,15 @@ export const options = {
 };
 
 export const handleSummary = report("smoke", ROUTES);
+
+const availability = () => request("GET", `/api/v1/events/${EVENT_ID}/availability`, { name: "GET /api/v1/events/:id/availability" });
+const freeSeats = (res) => res.json("sections").reduce((sum, section) => sum + section.available, 0);
+
+/** Every buying scenario ends with these: the database cross-checked against the provider's ledger. */
+function checkInvariants() {
+  const res = request("GET", `/api/v1/dev/events/${EVENT_ID}/invariants`, { name: "GET /api/v1/dev/events/:id/invariants", phase: "check" });
+  check(res, { "invariants: zero violations": (r) => r.status === 200 && r.json("violations") === 0 });
+}
 
 export function setup() {
   resetEvent();
@@ -68,33 +79,47 @@ export default function () {
   // Hold the first seat of section A (the event was reset in setup, so it is free).
   const seatMap = request("GET", `/api/v1/events/${EVENT_ID}/seats?section=A`, { name: "GET /api/v1/events/:id/seats" });
   const seatId = seatMap.json("seats.0.id");
-  check(request("POST", `/api/v1/events/${EVENT_ID}/holds`, { token, body: { seatIds: [seatId] }, name: "POST /api/v1/events/:id/holds" }), {
+  const holdSeat = () =>
+    request("POST", `/api/v1/events/${EVENT_ID}/holds`, { token, body: { seatIds: [seatId] }, name: "POST /api/v1/events/:id/holds" });
+  check(holdSeat(), {
     "hold: 201": (r) => r.status === 201,
     "hold: the requested seat": (r) => r.json("seats.0.id") === seatId,
   });
+  check(request("GET", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "GET /api/v1/events/:id/holds/me" }), {
+    "my holds: the seat just held": (r) => r.json("seats.0.id") === seatId,
+  });
+
+  // Release it: the seat is available again at once. Then hold it again to buy.
+  check(request("DELETE", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "DELETE /api/v1/events/:id/holds/me" }), {
+    "release: 204": (r) => r.status === 204,
+  });
+  check(availability(), { "release: all 10,000 seats free again": (r) => freeSeats(r) === 10000 });
+  check(holdSeat(), { "hold again: 201": (r) => r.status === 201 });
 
   // Buy it: one charge at the mock provider; a repeated key replays the answer instead of buying twice.
   const orderBody = { eventId: EVENT_ID, seatIds: [seatId] };
   const orderKey = `smoke-${Date.now()}`;
-  const bought = request("POST", "/api/v1/orders", { token, body: orderBody, name: "POST /api/v1/orders", headers: { "Idempotency-Key": orderKey } });
-  check(bought, { "order: 201 paid, or 402 when the mock declines": (r) => (r.status === 201 && r.json("status") === "paid") || r.status === 402 });
-  if (bought.status === 201) {
-    check(request("POST", "/api/v1/orders", { token, body: orderBody, name: "POST /api/v1/orders", headers: { "Idempotency-Key": orderKey } }), {
-      "order: a repeated key replays the same order": (r) => r.status === 201 && r.json("id") === bought.json("id"),
-    });
-    check(request("GET", `/api/v1/orders/${bought.json("id")}`, { token, name: "GET /api/v1/orders/:id" }), { "order: readable": (r) => r.status === 200 });
-    return; // seat is sold: nothing left to list or release
-  }
+  const placeOrder = () =>
+    request("POST", "/api/v1/orders", { token, body: orderBody, name: "POST /api/v1/orders", headers: { "Idempotency-Key": orderKey } });
+  const bought = placeOrder();
+  check(bought, { "order: 201 issued, or 402 when the mock declines": (r) => (r.status === 201 && r.json("status") === "issued") || r.status === 402 });
 
-  check(request("GET", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "GET /api/v1/events/:id/holds/me" }), {
-    "my holds: the seat just held": (r) => r.json("seats.0.id") === seatId,
-  });
-  check(request("DELETE", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "DELETE /api/v1/events/:id/holds/me" }), {
-    "release: 204": (r) => r.status === 204,
-  });
-  check(request("GET", `/api/v1/events/${EVENT_ID}/availability`, { name: "GET /api/v1/events/:id/availability" }), {
-    "release: all 10,000 seats free again": (r) => r.json("sections").reduce((sum, s) => sum + s.available, 0) === 10000,
-  });
+  if (bought.status === 201) {
+    check(placeOrder(), { "order: a repeated key replays the same order": (r) => r.status === 201 && r.json("id") === bought.json("id") });
+    check(request("GET", `/api/v1/orders/${bought.json("id")}`, { token, name: "GET /api/v1/orders/:id" }), { "order: readable": (r) => r.status === 200 });
+    check(request("GET", `/api/v1/orders/${bought.json("id")}/tickets`, { token, name: "GET /api/v1/orders/:id/tickets" }), {
+      "tickets: one per seat, with a code": (r) => r.json().length === 1 && r.json("0.code").length >= 16,
+    });
+    check(availability(), { "sold: the seat is no longer available": (r) => freeSeats(r) === 9999 });
+  } else {
+    // Declined (about 1 in 10 with the default mock): the order failed and the seat is free again at once.
+    check(placeOrder(), { "declined: a repeated key replays the same 402": (r) => r.status === 402 });
+    check(request("GET", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "GET /api/v1/events/:id/holds/me" }), {
+      "declined: nothing is held any more": (r) => r.json("seats").length === 0,
+    });
+    check(availability(), { "declined: all 10,000 seats free": (r) => freeSeats(r) === 10000 });
+  }
+  checkInvariants();
 
   check(request("POST", "/api/v1/auth/logout", { token }), { "logout: 204": (r) => r.status === 204 });
 }

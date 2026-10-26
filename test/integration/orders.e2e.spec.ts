@@ -151,6 +151,8 @@ describe("Orders (e2e)", () => {
       expect(await count("SELECT count(*) AS n FROM tickets")).toBe(1); // only the pre-existing one
       expect((await db.query("SELECT status FROM orders WHERE user_id = $1", [s.userIds[0]])).rows).toEqual([{ status: "pending_payment" }]);
       expect((await ledger()).totals.succeeded).toBe(1); // charged, so a reconciliation can find it
+      const invariants = await http(app).get(`${API}/dev/events/${s.eventId}/invariants`).expect(200);
+      expect(invariants.body.awaitingReconciliation).toBe(1);
     });
 
     it("lists and shows only my own orders; someone else's order is a 404", async () => {

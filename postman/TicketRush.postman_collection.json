@@ -521,7 +521,7 @@
                 "orders"
               ]
             },
-            "description": "Requires login and the `Idempotency-Key` header (generated per send by the pre-request script; re-send the SAME key to replay). Body `{ eventId, seatIds }`: every seat must be held by you and not expired. 201 paid order `{ id, eventId, status, totalCents, items, createdAt }`; 402 `PAYMENT_DECLINED` (order failed, seats released); 202 payment outcome not known yet (order `pending_payment`, poll Get order); 409 `HOLD_INVALID` (`details.seatIds`), 409 `ORDER_IN_PROGRESS`, 409 `IDEMPOTENCY_IN_PROGRESS`, 422 `IDEMPOTENCY_KEY_REUSED`, 503 `PAYMENT_PROVIDER_UNAVAILABLE`, 400 missing key.",
+            "description": "Requires login and the `Idempotency-Key` header (generated per send by the pre-request script; re-send the SAME key to replay). Body `{ eventId, seatIds }`: every seat must be held by you and not expired. 201 issued order (seats sold, tickets issued) `{ id, eventId, status, totalCents, items, createdAt }`; 402 `PAYMENT_DECLINED` (order failed, seats released); 202 payment outcome not known yet (order `pending_payment`, poll Get order); 409 `HOLD_INVALID` (`details.seatIds`), 409 `ORDER_IN_PROGRESS`, 409 `IDEMPOTENCY_IN_PROGRESS`, 422 `IDEMPOTENCY_KEY_REUSED`, 503 `PAYMENT_PROVIDER_UNAVAILABLE`, 400 missing key.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"eventId\": {{eventId}},\n  \"seatIds\": [{{seatId}}]\n}",
@@ -577,6 +577,27 @@
           }
         },
         {
+          "name": "Order tickets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{orderId}}/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                "{{orderId}}",
+                "tickets"
+              ]
+            },
+            "description": "Requires login. 200 `[{ id, seatId, section, row, number, code }]`, one per seat, with an unguessable `code` for the QR. 409 `ORDER_NOT_ISSUED` (`details.status`) while the order is not issued yet; someone else's order is 404."
+          }
+        },
+        {
           "name": "List my orders",
           "request": {
             "method": "GET",
@@ -620,6 +641,31 @@
               ]
             },
             "description": "Only with `ENABLE_DEV_ROUTES=true` (on in Docker Compose). Removes orders, payments and tickets of the event and makes every seat available. Otherwise answers like an unknown route (404).",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "Check invariants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/dev/events/{{eventId}}/invariants",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "{{eventId}}",
+                "invariants"
+              ]
+            },
+            "description": "Only with `ENABLE_DEV_ROUTES=true`. The correctness checks every buying scenario ends with, computed from the database AND the payment provider's ledger. `violations` must be 0: seats sold twice, sold seats without a ticket, issued orders without tickets or without a charge, charges for failed orders, amount mismatches, charges without an order. `awaitingReconciliation` counts successful charges whose order is still pending (not a bug).",
             "auth": {
               "type": "noauth"
             }
