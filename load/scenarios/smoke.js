@@ -15,6 +15,8 @@ const ROUTES = [
   "GET /api/v1/me",
   "POST /api/v1/events/:id/holds",
   "GET /api/v1/events/:id/holds/me",
+  "POST /api/v1/orders",
+  "GET /api/v1/orders/:id",
   "DELETE /api/v1/events/:id/holds/me",
   "POST /api/v1/auth/logout",
 ];
@@ -70,6 +72,19 @@ export default function () {
     "hold: 201": (r) => r.status === 201,
     "hold: the requested seat": (r) => r.json("seats.0.id") === seatId,
   });
+
+  // Buy it: one charge at the mock provider; a repeated key replays the answer instead of buying twice.
+  const orderBody = { eventId: EVENT_ID, seatIds: [seatId] };
+  const orderKey = `smoke-${Date.now()}`;
+  const bought = request("POST", "/api/v1/orders", { token, body: orderBody, name: "POST /api/v1/orders", headers: { "Idempotency-Key": orderKey } });
+  check(bought, { "order: 201 paid, or 402 when the mock declines": (r) => (r.status === 201 && r.json("status") === "paid") || r.status === 402 });
+  if (bought.status === 201) {
+    check(request("POST", "/api/v1/orders", { token, body: orderBody, name: "POST /api/v1/orders", headers: { "Idempotency-Key": orderKey } }), {
+      "order: a repeated key replays the same order": (r) => r.status === 201 && r.json("id") === bought.json("id"),
+    });
+    check(request("GET", `/api/v1/orders/${bought.json("id")}`, { token, name: "GET /api/v1/orders/:id" }), { "order: readable": (r) => r.status === 200 });
+    return; // seat is sold: nothing left to list or release
+  }
 
   check(request("GET", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "GET /api/v1/events/:id/holds/me" }), {
     "my holds: the seat just held": (r) => r.json("seats.0.id") === seatId,

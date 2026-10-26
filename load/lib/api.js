@@ -14,8 +14,8 @@ export const testUser = (n) => `user${n}@test.local`;
  * group by route instead of by concrete URL, and a `phase` tag, so setup traffic
  * (logins, reset) never pollutes the numbers of the scenario itself.
  */
-export function request(method, path, { body, token, name, phase = "main" } = {}) {
-  const headers = { "Content-Type": "application/json" };
+export function request(method, path, { body, token, name, phase = "main", headers: extra } = {}) {
+  const headers = { "Content-Type": "application/json", ...extra };
   if (token) headers.Authorization = `Bearer ${token}`;
   return http.request(method, `${BASE_URL}${path}`, body === undefined ? null : JSON.stringify(body), {
     headers,

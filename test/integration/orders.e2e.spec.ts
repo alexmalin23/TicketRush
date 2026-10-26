@@ -1,0 +1,242 @@
+import request from "supertest";
+import { ModexApplication } from "../../src/core";
+import { DatabaseService } from "../../src/database/database.service";
+import { buildScenario, holdRequest, Scenario } from "../helpers/scenario";
+import { startProvider } from "../helpers/provider";
+import { bearer, createTestApp, http } from "../helpers/test-app";
+
+const API = "/api/v1";
+
+type ProviderOverrides = Parameters<typeof startProvider>[0];
+
+/** The API and a real payment provider, started together; env is set before each starts and restored after. */
+async function startStack(provider: ProviderOverrides, apiEnv: Record<string, string> = {}, providerUrl?: string) {
+  const mock = await startProvider(provider);
+  const saved = { ...process.env };
+  Object.assign(process.env, { PAYMENTS_PROVIDER_URL: providerUrl ?? mock.url, PAYMENT_TIMEOUT_MS: "2000", ...apiEnv });
+  try {
+    const app = await createTestApp();
+    return {
+      app,
+      mock,
+      stop: async () => {
+        await app.close();
+        await mock.app.close();
+      },
+    };
+  } finally {
+    process.env = saved;
+  }
+}
+
+describe("Orders (e2e)", () => {
+  let app: ModexApplication;
+  let db: DatabaseService;
+  let s: Scenario;
+  let mockUrl: string;
+  let stop: () => Promise<void>;
+
+  const useStack = (provider: ProviderOverrides, apiEnv: Record<string, string> = {}, providerUrl?: string) => {
+    beforeAll(async () => {
+      const stack = await startStack(provider, apiEnv, providerUrl);
+      ({ app, stop } = stack);
+      mockUrl = stack.mock.url;
+      db = app.get(DatabaseService);
+    });
+    afterAll(() => stop());
+    beforeEach(async () => {
+      s = await buildScenario(app, 12, 20);
+      await request(mockUrl).delete("/ledger");
+    });
+  };
+
+  const hold = (userIndex: number, ids: number[]) => holdRequest(app, s.eventId)(s.tokens[userIndex], ids);
+  const order = (userIndex: number, key: string | undefined, body: object) => {
+    const req = http(app).post(`${API}/orders`).set(bearer(s.tokens[userIndex]));
+    return (key === undefined ? req : req.set("Idempotency-Key", key)).send(body);
+  };
+  const ledger = async () => (await request(mockUrl).get("/ledger").expect(200)).body;
+  const count = async (sql: string) => Number((await db.query<{ n: string }>(sql)).rows[0].n);
+  const seatState = async (id: number) =>
+    (await db.query<{ status: string; held_by: number | null }>("SELECT status, held_by FROM seats WHERE id = $1", [id])).rows[0];
+  const payments = async () =>
+    (await db.query<{ status: string }>("SELECT status FROM payments ORDER BY attempt")).rows.map((p) => p.status);
+
+  describe("payment succeeds", () => {
+    useStack({});
+
+    it("creates a paid order, sells the seats and charges exactly the total", async () => {
+      await hold(0, [s.seatIds[0], s.seatIds[1]]).expect(201);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[1], s.seatIds[0]] }).expect(201);
+
+      expect(res.body).toMatchObject({ status: "paid", totalCents: 90000, eventId: s.eventId });
+      expect(res.body.items.map((i: { seatId: number }) => i.seatId)).toEqual([s.seatIds[0], s.seatIds[1]]);
+      expect(await seatState(s.seatIds[0])).toEqual({ status: "sold", held_by: null });
+      expect((await ledger()).totals).toEqual({ charges: 1, succeeded: 1, declined: 0, capturedCents: 90000 });
+      expect(await payments()).toEqual(["succeeded"]);
+    });
+
+    it("a retry with the same key replays the answer: no second order, no second charge", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+
+      const first = await order(0, "k1", body).expect(201);
+      const retry = await order(0, "k1", body).expect(201);
+
+      expect(retry.body).toEqual(first.body);
+      expect(await count("SELECT count(*) AS n FROM orders")).toBe(1);
+      expect((await ledger()).totals.charges).toBe(1);
+    });
+
+    it("the same key with another body is 422 IDEMPOTENCY_KEY_REUSED", async () => {
+      await hold(0, [s.seatIds[0], s.seatIds[1]]).expect(201);
+      await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(201);
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[1]] }).expect(422);
+      expect(res.body.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    });
+
+    it("refuses seats the buyer does not hold: never held, someone else's, or expired", async () => {
+      await hold(1, [s.seatIds[1]]).expect(201); // someone else's
+      await hold(0, [s.seatIds[2]]).expect(201);
+      await db.query("UPDATE seats SET held_until = now() - interval '1 second' WHERE id = $1", [s.seatIds[2]]); // expired
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0], s.seatIds[1], s.seatIds[2]] }).expect(409);
+      expect(res.body).toMatchObject({ code: "HOLD_INVALID", details: { seatIds: [s.seatIds[0], s.seatIds[1], s.seatIds[2]] } });
+      expect((await ledger()).totals.charges).toBe(0);
+      expect(await count("SELECT count(*) AS n FROM orders")).toBe(0);
+    });
+
+    it("the same buyer double-clicking with 8 parallel requests: one order, one charge", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+
+      const results = await Promise.all(Array.from({ length: 8 }, () => order(0, "same-key", body)));
+
+      const statuses = results.map((r) => r.status);
+      expect(statuses.filter((st) => st === 201).length).toBeGreaterThanOrEqual(1);
+      expect(statuses.every((st) => st === 201 || st === 409)).toBe(true); // 409 = still in progress
+      expect(await count("SELECT count(*) AS n FROM orders")).toBe(1);
+      expect((await ledger()).totals.charges).toBe(1);
+    });
+
+    it("parallel orders with different keys for the same seats: one order, one charge", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+
+      const results = await Promise.all(Array.from({ length: 8 }, (_, i) => order(0, `key-${i}`, body)));
+
+      expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+      expect(results.filter((r) => r.status !== 201).every((r) => r.status === 409)).toBe(true);
+      expect(await count("SELECT count(*) AS n FROM orders WHERE status = 'paid'")).toBe(1);
+      expect((await ledger()).totals.charges).toBe(1);
+    });
+
+    it("lists and shows only my own orders; someone else's order is a 404", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const created = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(201);
+
+      const mine = await http(app).get(`${API}/orders`).set(bearer(s.tokens[0])).expect(200);
+      expect(mine.body.map((o: { id: string }) => o.id)).toEqual([created.body.id]);
+      await http(app).get(`${API}/orders`).set(bearer(s.tokens[1])).expect(200, []);
+
+      await http(app).get(`${API}/orders/${created.body.id}`).set(bearer(s.tokens[0])).expect(200);
+      await http(app).get(`${API}/orders/${created.body.id}`).set(bearer(s.tokens[1])).expect(404);
+    });
+
+    it("requires a login, an Idempotency-Key and valid input", async () => {
+      await http(app).post(`${API}/orders`).set("Idempotency-Key", "k").send({ eventId: s.eventId, seatIds: [1] }).expect(401);
+      const noKey = await order(0, undefined, { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(400);
+      expect(noKey.body.code).toBe("VALIDATION_ERROR");
+      expect((await order(0, "k", { eventId: s.eventId, seatIds: [] }).expect(400)).body.code).toBe("VALIDATION_ERROR");
+      await http(app).get(`${API}/orders/not-a-uuid`).set(bearer(s.tokens[0])).expect(400);
+      await order(0, "k", { eventId: 999999, seatIds: [s.seatIds[0]] }).expect(404);
+    });
+  });
+
+  describe("payment is declined", () => {
+    useStack({ MOCK_PAYMENT_FAILURE_RATE: "1" });
+
+    it("fails the order with 402 and frees the seats at once", async () => {
+      await hold(0, [s.seatIds[0], s.seatIds[1]]).expect(201);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0], s.seatIds[1]] }).expect(402);
+
+      expect(res.body.code).toBe("PAYMENT_DECLINED");
+      const failed = await http(app).get(`${API}/orders/${res.body.details.orderId}`).set(bearer(s.tokens[0])).expect(200);
+      expect(failed.body.status).toBe("failed");
+      expect(await seatState(s.seatIds[0])).toEqual({ status: "available", held_by: null });
+      await hold(1, [s.seatIds[0], s.seatIds[1]]).expect(201); // someone else can buy them now
+      expect((await ledger()).totals).toMatchObject({ charges: 1, declined: 1, capturedCents: 0 });
+    });
+
+    it("a retry of a declined order with the same key is 402 again, without charging again", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+      await order(0, "k1", body).expect(402);
+      await order(0, "k1", body).expect(402);
+      expect((await ledger()).totals.charges).toBe(1);
+      expect(await count("SELECT count(*) AS n FROM orders")).toBe(1);
+    });
+  });
+
+  describe("the provider answers too slowly", () => {
+    // Every charge takes 2 s, the API waits 100 ms per attempt: all 3 attempts time out.
+    useStack({ MOCK_PAYMENT_LATENCY_MS_MIN: "2000", MOCK_PAYMENT_LATENCY_MS_MAX: "2000" }, { PAYMENT_TIMEOUT_MS: "100" });
+
+    it("answers 202, keeps the order pending with its seats held, and never charges twice", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+
+      const res = await order(0, "k1", body).expect(202);
+      expect(res.body.status).toBe("pending_payment");
+      expect(await payments()).toEqual(["timeout", "timeout", "timeout"]);
+      expect((await seatState(s.seatIds[0])).status).toBe("held");
+
+      // A new key must not create a second order (and a second charge) for the same seats.
+      const again = await order(0, "k2", body).expect(409);
+      expect(again.body).toMatchObject({ code: "ORDER_IN_PROGRESS", details: { orderId: res.body.id } });
+
+      // Releasing the seats mid-payment is refused silently: the seats stay committed to the payment.
+      await http(app).delete(`${API}/events/${s.eventId}/holds/me`).set(bearer(s.tokens[0])).expect(204);
+      expect((await seatState(s.seatIds[0])).status).toBe("held");
+
+      await new Promise((resolve) => setTimeout(resolve, 2100)); // the provider finishes in the background
+      expect((await ledger()).totals).toMatchObject({ charges: 1, succeeded: 1 });
+    }, 15_000);
+  });
+
+  describe("a charge times out, then the same key reveals it", () => {
+    // The provider charges at once but answers after 600 ms; the API waits 150 ms: the first attempt
+    // times out, and the second one (same key) finds the charge already recorded.
+    useStack({ MOCK_PAYMENT_TIMEOUT_RATE: "1", MOCK_PAYMENT_HANG_MS: "600" }, { PAYMENT_TIMEOUT_MS: "150" });
+
+    it("completes the order with exactly one charge", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(201);
+
+      expect(res.body.status).toBe("paid");
+      expect(await payments()).toEqual(["timeout", "succeeded"]);
+      expect((await ledger()).totals.charges).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 650)); // let the first hung response finish
+    });
+  });
+
+  describe("the provider is down", () => {
+    useStack({}, {}, "http://127.0.0.1:1");
+
+    it("answers 503, fails the order, charges nothing and keeps the hold for a retry", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+
+      const res = await order(0, "k1", body).expect(503);
+      expect(res.body.code).toBe("PAYMENT_PROVIDER_UNAVAILABLE");
+
+      expect((await db.query("SELECT status FROM orders")).rows).toEqual([{ status: "failed" }]);
+      expect((await seatState(s.seatIds[0])).status).toBe("held"); // the buyer did nothing wrong
+      expect(await payments()).toEqual(["unreachable"]); // not "declined": the card was never asked
+      expect((await ledger()).totals.charges).toBe(0);
+    });
+  });
+});

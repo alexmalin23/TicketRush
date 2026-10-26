@@ -20,6 +20,14 @@ export const SEAT_IS_AVAILABLE = `(status = 'available' OR (status = 'held' AND 
  */
 export const HOLD_IS_ACTIVE = `(status = 'held' AND held_until >= now())`;
 
+/**
+ * A seat in an order that awaits payment is committed to that payment: releasing it mid-charge would
+ * let another buyer take a seat the first one is paying for.
+ */
+const NOT_IN_PENDING_ORDER = `NOT EXISTS (
+  SELECT 1 FROM order_items oi JOIN orders po ON po.id = oi.order_id
+   WHERE oi.seat_id = seats.id AND po.status = 'pending_payment')`;
+
 export interface SectionAvailability {
   name: string;
   available: number;
@@ -155,8 +163,52 @@ export class SeatsModel {
       `UPDATE seats
           SET status = 'available', held_by = NULL, held_until = NULL
         WHERE event_id = $1 AND held_by = $2 AND status = 'held'
-          AND ($3::bigint[] IS NULL OR id = ANY($3::bigint[]))`,
+          AND ($3::bigint[] IS NULL OR id = ANY($3::bigint[]))
+          AND ${NOT_IN_PENDING_ORDER}`,
       [eventId, userId, seatIds]
+    );
+    return rowCount ?? 0;
+  }
+
+  /**
+   * Finds the seats among `seatIds` that this user holds (unexpired), locks them against every other
+   * request until the transaction ends, and returns them with their price, ordered by id.
+   * Fewer rows than requested means a seat is not held by this buyer anymore (never held, expired,
+   * or taken by someone else). Meaningful only inside a transaction: the lock lasts until it ends.
+   */
+  async lockSeatsHeldByUser(
+    eventId: number,
+    userId: number,
+    seatIds: number[],
+    db: Queryable
+  ): Promise<{ id: number; priceCents: number }[]> {
+    const { rows } = await db.query<{ id: number; priceCents: number }>(
+      `SELECT id, price_cents AS "priceCents" FROM seats
+        WHERE event_id = $1 AND held_by = $2 AND id = ANY($3::bigint[]) AND ${HOLD_IS_ACTIVE}
+        ORDER BY id
+        FOR UPDATE`,
+      [eventId, userId, seatIds]
+    );
+    return rows;
+  }
+
+  /** Gives the held seats a fresh expiry: a buyer who is paying must not lose the seats mid-payment. */
+  async extendHolds(seatIds: number[], ttlSeconds: number, db: Queryable): Promise<void> {
+    await db.query(
+      `UPDATE seats SET held_until = now() + make_interval(secs => $2) WHERE id = ANY($1::bigint[]) AND status = 'held'`,
+      [seatIds, ttlSeconds]
+    );
+  }
+
+  /**
+   * Turns held seats into sold seats, but only if this buyer still holds them. The returned count
+   * lets the caller prove every seat was really sold; fewer than expected means the hold was lost.
+   */
+  async sellHeldSeats(userId: number, seatIds: number[], db: Queryable): Promise<number> {
+    const { rowCount } = await db.query(
+      `UPDATE seats SET status = 'sold', held_by = NULL, held_until = NULL
+        WHERE id = ANY($1::bigint[]) AND status = 'held' AND held_by = $2`,
+      [seatIds, userId]
     );
     return rowCount ?? 0;
   }
