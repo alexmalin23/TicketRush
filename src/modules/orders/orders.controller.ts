@@ -30,4 +30,10 @@ export class OrdersController {
   findOne(req: Request<OrderIdParams>) {
     return this.ordersService.findOne(req.params.id, req.user!.id);
   }
+
+  @Get("/:id/tickets")
+  @Validate({ params: OrderIdParamsSchema })
+  tickets(req: Request<OrderIdParams>) {
+    return this.ordersService.tickets(req.params.id, req.user!.id);
+  }
 }

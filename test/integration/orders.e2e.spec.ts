@@ -2,32 +2,10 @@ import request from "supertest";
 import { ModexApplication } from "../../src/core";
 import { DatabaseService } from "../../src/database/database.service";
 import { buildScenario, holdRequest, Scenario } from "../helpers/scenario";
-import { startProvider } from "../helpers/provider";
-import { bearer, createTestApp, http } from "../helpers/test-app";
+import { ProviderOverrides, startStack } from "../helpers/stack";
+import { bearer, http } from "../helpers/test-app";
 
 const API = "/api/v1";
-
-type ProviderOverrides = Parameters<typeof startProvider>[0];
-
-/** The API and a real payment provider, started together; env is set before each starts and restored after. */
-async function startStack(provider: ProviderOverrides, apiEnv: Record<string, string> = {}, providerUrl?: string) {
-  const mock = await startProvider(provider);
-  const saved = { ...process.env };
-  Object.assign(process.env, { PAYMENTS_PROVIDER_URL: providerUrl ?? mock.url, PAYMENT_TIMEOUT_MS: "2000", ...apiEnv });
-  try {
-    const app = await createTestApp();
-    return {
-      app,
-      mock,
-      stop: async () => {
-        await app.close();
-        await mock.app.close();
-      },
-    };
-  } finally {
-    process.env = saved;
-  }
-}
 
 describe("Orders (e2e)", () => {
   let app: ModexApplication;
@@ -70,7 +48,7 @@ describe("Orders (e2e)", () => {
 
       const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[1], s.seatIds[0]] }).expect(201);
 
-      expect(res.body).toMatchObject({ status: "paid", totalCents: 90000, eventId: s.eventId });
+      expect(res.body).toMatchObject({ status: "issued", totalCents: 90000, eventId: s.eventId });
       expect(res.body.items.map((i: { seatId: number }) => i.seatId)).toEqual([s.seatIds[0], s.seatIds[1]]);
       expect(await seatState(s.seatIds[0])).toEqual({ status: "sold", held_by: null });
       expect((await ledger()).totals).toEqual({ charges: 1, succeeded: 1, declined: 0, capturedCents: 90000 });
@@ -128,8 +106,51 @@ describe("Orders (e2e)", () => {
 
       expect(results.filter((r) => r.status === 201)).toHaveLength(1);
       expect(results.filter((r) => r.status !== 201).every((r) => r.status === 409)).toBe(true);
-      expect(await count("SELECT count(*) AS n FROM orders WHERE status = 'paid'")).toBe(1);
+      expect(await count("SELECT count(*) AS n FROM orders WHERE status = 'issued'")).toBe(1);
       expect((await ledger()).totals.charges).toBe(1);
+    });
+
+    it("issues one ticket per seat with a unique unguessable code, readable only by the buyer", async () => {
+      await hold(0, [s.seatIds[0], s.seatIds[1]]).expect(201);
+      const created = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0], s.seatIds[1]] }).expect(201);
+
+      const res = await http(app).get(`${API}/orders/${created.body.id}/tickets`).set(bearer(s.tokens[0])).expect(200);
+      expect(res.body).toHaveLength(2);
+      expect(res.body[0]).toEqual({
+        id: expect.any(String), seatId: s.seatIds[0], section: "A", row: "1", number: 1, code: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      });
+      expect(new Set(res.body.map((t: { code: string }) => t.code)).size).toBe(2);
+
+      await http(app).get(`${API}/orders/${created.body.id}/tickets`).set(bearer(s.tokens[1])).expect(404);
+      await http(app).get(`${API}/orders/${created.body.id}/tickets`).expect(401);
+    });
+
+    it("a replayed order does not issue more tickets", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const body = { eventId: s.eventId, seatIds: [s.seatIds[0]] };
+      await order(0, "k1", body).expect(201);
+      await order(0, "k1", body).expect(201);
+      expect(await count("SELECT count(*) AS n FROM tickets")).toBe(1);
+    });
+
+    it("if issuing fails after the charge, nothing is half done and the charge stays visible", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      // A ticket for this seat already exists (the last line of defense against a double sale).
+      const other = await db.query<{ id: string }>(
+        "INSERT INTO orders (user_id, event_id, status, total_cents) VALUES ($1, $2, 'issued', 45000) RETURNING id",
+        [s.userIds[1], s.eventId]
+      );
+      await db.query("INSERT INTO tickets (order_id, event_id, seat_id, code) VALUES ($1, $2, $3, 'pre-existing')", [
+        other.rows[0].id, s.eventId, s.seatIds[0],
+      ]);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] });
+
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect((await seatState(s.seatIds[0])).status).toBe("held"); // not sold: the whole sale rolled back
+      expect(await count("SELECT count(*) AS n FROM tickets")).toBe(1); // only the pre-existing one
+      expect((await db.query("SELECT status FROM orders WHERE user_id = $1", [s.userIds[0]])).rows).toEqual([{ status: "pending_payment" }]);
+      expect((await ledger()).totals.succeeded).toBe(1); // charged, so a reconciliation can find it
     });
 
     it("lists and shows only my own orders; someone else's order is a 404", async () => {
@@ -201,6 +222,9 @@ describe("Orders (e2e)", () => {
       await http(app).delete(`${API}/events/${s.eventId}/holds/me`).set(bearer(s.tokens[0])).expect(204);
       expect((await seatState(s.seatIds[0])).status).toBe("held");
 
+      const early = await http(app).get(`${API}/orders/${res.body.id}/tickets`).set(bearer(s.tokens[0])).expect(409);
+      expect(early.body).toMatchObject({ code: "ORDER_NOT_ISSUED", details: { status: "pending_payment" } });
+
       await new Promise((resolve) => setTimeout(resolve, 2100)); // the provider finishes in the background
       expect((await ledger()).totals).toMatchObject({ charges: 1, succeeded: 1 });
     }, 15_000);
@@ -216,7 +240,7 @@ describe("Orders (e2e)", () => {
 
       const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(201);
 
-      expect(res.body.status).toBe("paid");
+      expect(res.body.status).toBe("issued");
       expect(await payments()).toEqual(["timeout", "succeeded"]);
       expect((await ledger()).totals.charges).toBe(1);
       await new Promise((resolve) => setTimeout(resolve, 650)); // let the first hung response finish

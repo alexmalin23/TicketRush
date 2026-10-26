@@ -5,6 +5,7 @@ import { EventsModel } from "../events/events.model";
 import { IdempotencyService, StoredResponse } from "../idempotency/idempotency.service";
 import { PaymentsClient } from "../payments/payments.client";
 import { SeatsModel } from "../seats/seats.model";
+import { Ticket, TicketsModel } from "../tickets/tickets.model";
 import { Order, OrdersModel } from "./orders.model";
 import { CreateOrderInput } from "./orders.schemas";
 
@@ -22,6 +23,7 @@ export class OrdersService {
     private readonly eventsModel: EventsModel,
     private readonly seatsModel: SeatsModel,
     private readonly ordersModel: OrdersModel,
+    private readonly ticketsModel: TicketsModel,
     private readonly payments: PaymentsClient,
     private readonly idempotency: IdempotencyService
   ) {
@@ -43,7 +45,7 @@ export class OrdersService {
     const outcome = await this.chargeWithRetries(orderId, totalCents);
 
     if (outcome.status === "succeeded") {
-      await this.markPaid(orderId, userId, input.seatIds);
+      await this.sellAndIssue(orderId, userId, input.eventId, input.seatIds);
       return { status: 201, body: await this.ordersModel.findOwned(orderId, userId) };
     }
     if (outcome.status === "declined") {
@@ -110,16 +112,22 @@ export class OrdersService {
     return { status: "timeout" as const };
   }
 
-  /** Transaction 3a: the charge succeeded, so the seats are sold and the order is paid, together or not at all. */
-  private markPaid(orderId: string, userId: number, seatIds: number[]): Promise<void> {
+  /**
+   * Transaction 3a: the charge succeeded. Sell the seats, issue the tickets and complete the order,
+   * all together or none of it: a half-finished sale (paid but no tickets, tickets for unsold seats)
+   * must never be visible. If anything fails the order stays pending_payment with its seats held,
+   * which a reconciliation can recognise (a successful charge, no tickets).
+   */
+  private sellAndIssue(orderId: string, userId: number, eventId: number, seatIds: number[]): Promise<void> {
     return this.database.transaction(async (client) => {
       if (!(await this.ordersModel.moveStatus(orderId, "pending_payment", "paid", client))) return; // already decided
       const sold = await this.seatsModel.sellHeldSeats(userId, seatIds, client);
       if (sold !== seatIds.length) {
-        // The buyer was charged but a seat is gone. Rolling back leaves the order pending for reconciliation.
         this.logger.error("Charged but seats could not be sold", { orderId, expected: seatIds.length, sold });
         throw new Error(`Order ${orderId}: charged but only ${sold} of ${seatIds.length} seats could be sold`);
       }
+      await this.ticketsModel.issueForSeats(orderId, eventId, seatIds, client);
+      await this.ordersModel.moveStatus(orderId, "paid", "issued", client);
     });
   }
 
@@ -141,6 +149,15 @@ export class OrdersService {
     const order = await this.ordersModel.findOwned(orderId, userId);
     if (!order) throw new NotFoundException(`Order ${orderId} not found`);
     return order;
+  }
+
+  /** Tickets exist only for an issued order; before that the answer is "not yet", not "none". */
+  async tickets(orderId: string, userId: number): Promise<Ticket[]> {
+    const order = await this.findOne(orderId, userId);
+    if (order.status !== "issued") {
+      throw new ConflictException("Tickets are available once the order is issued", { status: order.status }, "ORDER_NOT_ISSUED");
+    }
+    return this.ticketsModel.findByOrder(orderId);
   }
 
   findMine(userId: number): Promise<Order[]> {
