@@ -75,9 +75,11 @@ describe("Holds (e2e)", () => {
       const res = await hold(s.tokens[0], [s.seatIds[0], s.seatIds[1]]).expect(201);
       expect(res.body.seats.map((seat: { id: number }) => seat.id).sort()).toEqual([s.seatIds[0], s.seatIds[1]].sort());
       expect(res.body.seats[0]).toEqual({ id: expect.any(Number), section: "A", row: "1", number: expect.any(Number), priceCents: 45000 });
+      // The expiry is stamped by the database clock, the comparison uses the test process clock:
+      // allow a few seconds of drift between the two instead of assuming they agree to the ms.
       const ttl = (new Date(res.body.expiresAt).getTime() - Date.now()) / 1000;
       expect(ttl).toBeGreaterThan(590);
-      expect(ttl).toBeLessThanOrEqual(600);
+      expect(ttl).toBeLessThan(605);
     });
 
     it(`${BUYERS} concurrent buyers, one seat: exactly one success`, async () => {
