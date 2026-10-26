@@ -1,30 +1,8 @@
-import type { AddressInfo } from "node:net";
 import request from "supertest";
-import { ExpressFactory, HttpException, Logger, ModexApplication } from "../../src/core";
+import { HttpException, Logger, ModexApplication } from "../../src/core";
 import type { Env } from "../../src/config/env";
 import { PaymentsClient } from "../../src/modules/payments/payments.client";
-import { paymentsProviderApp } from "../../src/payments-provider/app";
-
-const DEFAULTS = {
-  MOCK_PAYMENT_LATENCY_MS_MIN: "0",
-  MOCK_PAYMENT_LATENCY_MS_MAX: "0",
-  MOCK_PAYMENT_FAILURE_RATE: "0",
-  MOCK_PAYMENT_TIMEOUT_RATE: "0",
-  MOCK_PAYMENT_HANG_MS: "300",
-};
-
-/** A real provider process-in-a-test: real HTTP on a random port, configured through env like in production. */
-async function startProvider(overrides: Partial<Record<keyof typeof DEFAULTS, string>> = {}) {
-  const saved = { ...process.env };
-  Object.assign(process.env, DEFAULTS, overrides);
-  try {
-    const app = await ExpressFactory.create(paymentsProviderApp, { logLevel: "silent" });
-    const server = await app.listen(0, "127.0.0.1");
-    return { app, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
-  } finally {
-    process.env = saved;
-  }
-}
+import { startProvider } from "../helpers/provider";
 
 const clientFor = (url: string, timeoutMs = 1000) =>
   new PaymentsClient({ PAYMENTS_PROVIDER_URL: url, PAYMENT_TIMEOUT_MS: timeoutMs } as Env, new Logger("silent"));
