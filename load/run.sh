@@ -23,8 +23,18 @@ IFS='|' read -r d_cpus d_mem d_version d_os <<< "$(docker info --format '{{.NCPU
 docker_info="$d_cpus CPUs, $(( d_mem / 1024 / 1024 / 1024 )) GB, Docker $d_version ($d_os)"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (uncommitted changes)')"
 
+# A laptop that falls asleep mid-run freezes every in-flight request and makes the numbers meaningless.
+keep_awake=()
+if command -v caffeinate >/dev/null 2>&1; then keep_awake=(caffeinate -i); fi
+
+power="unknown"
+if command -v pmset >/dev/null 2>&1; then
+  power="$(pmset -g batt | head -1 | sed -E "s/.*'(.*)'.*/\1/")" # "AC Power" or "Battery Power"
+fi
+
 mkdir -p load/results
-docker compose --profile full --profile load run --rm \
+"${keep_awake[@]}" docker compose --profile full --profile load run --rm \
+  -e MACHINE_POWER="$power" \
   -e MACHINE_HOST="$(uname -sm)" \
   -e MACHINE_CPU="$cpu" \
   -e MACHINE_MEMORY="$memory" \

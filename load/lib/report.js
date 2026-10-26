@@ -71,6 +71,7 @@ function markdown(scenario, routes, data) {
     `| CPU | ${env("MACHINE_CPU")} |`,
     `| Memory | ${env("MACHINE_MEMORY")} |`,
     `| Docker | ${env("MACHINE_DOCKER")} |`,
+    `| Power | ${env("MACHINE_POWER")} |`,
     "",
     "## Results (setup traffic excluded)",
     "",
