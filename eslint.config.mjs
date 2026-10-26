@@ -27,6 +27,6 @@ export default defineConfig(
   {
     // k6 scenarios run in k6's own JS runtime, which provides these globals.
     files: ["load/**/*.js"],
-    languageOptions: { globals: { __ENV: "readonly", __VU: "readonly", __ITER: "readonly" } },
+    languageOptions: { globals: { __ENV: "readonly", __VU: "readonly", __ITER: "readonly", console: "readonly" } },
   }
 );
