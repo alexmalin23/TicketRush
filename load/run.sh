@@ -24,8 +24,10 @@ docker_info="$d_cpus CPUs, $(( d_mem / 1024 / 1024 / 1024 )) GB, Docker $d_versi
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (uncommitted changes)')"
 
 # A laptop that falls asleep mid-run freezes every in-flight request and makes the numbers meaningless.
+# -i alone is ignored once the display sleeps (macOS "dark wake" then sleeps again for 15 minutes);
+# -s holds the whole system awake while on AC power.
 keep_awake=()
-if command -v caffeinate >/dev/null 2>&1; then keep_awake=(caffeinate -i); fi
+if command -v caffeinate >/dev/null 2>&1; then keep_awake=(caffeinate -is); fi
 
 power="unknown"
 if command -v pmset >/dev/null 2>&1; then
