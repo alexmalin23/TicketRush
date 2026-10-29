@@ -11,7 +11,9 @@ x-app-env: &app-env
   JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
   LOG_LEVEL: ${LOG_LEVEL:-info}
   LOG_FORMAT: ${LOG_FORMAT:-json}
-  ENABLE_DEV_ROUTES: ${ENABLE_DEV_ROUTES:-true}
+  # Fixed, not read from .env: that file holds the host's `npm run dev` settings (false there),
+  # and every load scenario resets the event through these routes. This stack is local only.
+  ENABLE_DEV_ROUTES: "true"
 
 services:
   postgres:
