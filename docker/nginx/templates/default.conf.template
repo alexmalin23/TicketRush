@@ -1,0 +1,31 @@
+# Rendered at container start: ${LB_METHOD} picks a file from balancing/.
+
+# Docker's embedded DNS: "api" resolves to every replica.
+resolver 127.0.0.11 valid=5s ipv6=off;
+
+upstream api {
+  include /etc/nginx/balancing/${LB_METHOD}.conf;
+  zone api 64k;
+  # "resolve" re-reads Docker DNS, so replicas added or restarted later receive traffic.
+  server api:3000 resolve max_fails=3 fail_timeout=5s;
+  # Reused connections to the replicas: no TCP handshake per request.
+  keepalive 64;
+}
+
+server {
+  listen 80;
+
+  location / {
+    proxy_pass http://api;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # A stopped replica's IP stays in DNS for a few seconds and silently drops packets:
+    # without a short connect timeout a request would wait 60 s (the default) for it.
+    proxy_connect_timeout 1s;
+    # Such a request moves to the next replica. nginx never resends a POST that already
+    # reached a replica, so the balancer cannot place an order twice.
+    proxy_next_upstream error timeout;
+  }
+}

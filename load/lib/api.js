@@ -2,8 +2,8 @@
 import http from "k6/http";
 import { fail } from "k6";
 
-// Inside the Compose network the API is "api:3000"; this never goes through the host's localhost.
-export const BASE_URL = __ENV.BASE_URL || "http://api:3000";
+// Inside the Compose network the API is behind "lb"; this never goes through the host's localhost.
+export const BASE_URL = __ENV.BASE_URL || "http://lb";
 export const EVENT_ID = Number(__ENV.EVENT_ID || 1);
 export const USER_PASSWORD = "password123";
 
