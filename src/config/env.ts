@@ -30,6 +30,9 @@ const EnvSchema = z.object({
   LOG_FORMAT: z.enum(["text", "json"]).default("text"),
 
   HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  /** Hold attempts one buyer may make per window, then 429. */
+  HOLD_RATE_LIMIT: z.coerce.number().int().positive().default(5),
+  HOLD_RATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),
 
   /** The card processor (a mock provider in this project, see src/payments-provider). */
   PAYMENTS_PROVIDER_URL: z.url().default("http://localhost:3100"),

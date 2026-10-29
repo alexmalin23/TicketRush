@@ -408,7 +408,7 @@
                 }
               }
             },
-            "description": "Requires login. Body `{ seatIds }` (1-6 distinct ids). All-or-nothing: either every seat is held or none. 201 `{ seats: [{ id, section, row, number, priceCents }], expiresAt }`. 409 `SEAT_UNAVAILABLE` with `details.seatIds` (the seats that could not be taken), 409 `HOLD_LIMIT_EXCEEDED` with `details { limit, owned, requested }` (held + bought seats per buyer per event), 409 `EVENT_NOT_ON_SALE`, 404 unknown event, 400 `VALIDATION_ERROR`. Repeated holds add seats and do not extend earlier ones. Seat map saves the first available seat as `seatId`."
+            "description": "Requires login. Body `{ seatIds }` (1-6 distinct ids). All-or-nothing: either every seat is held or none. 201 `{ seats: [{ id, section, row, number, priceCents }], expiresAt }`. 409 `SEAT_UNAVAILABLE` with `details.seatIds` (the seats that could not be taken), 409 `HOLD_LIMIT_EXCEEDED` with `details { limit, owned, requested }` (held + bought seats per buyer per event), 409 `EVENT_NOT_ON_SALE`, 429 `RATE_LIMITED` with `Retry-After` and `details.retryAfterSeconds` (more than `HOLD_RATE_LIMIT` attempts per buyer per `HOLD_RATE_WINDOW_SECONDS`, counted per API instance), 404 unknown event, 400 `VALIDATION_ERROR`. Repeated holds add seats and do not extend earlier ones. Seat map saves the first available seat as `seatId`."
           }
         },
         {
