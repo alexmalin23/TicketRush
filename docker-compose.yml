@@ -3,7 +3,7 @@
 # Whole stack in containers (load tests, demos): `docker compose --profile full up -d --build`
 #   → also runs migrations, the API replicas and the load balancer (host port 3080).
 #   `npm run load` does this on its own. API_REPLICAS=1 reproduces the single-instance baseline;
-#   LB_METHOD=least-conn switches the balancing method (default round-robin).
+#   LB_METHOD=round-robin switches the balancing method (default least-conn).
 x-app-env: &app-env
   DATABASE_URL: postgres://postgres:postgres@postgres:5432/modex
   REDIS_URL: redis://redis:6379
@@ -111,7 +111,7 @@ services:
     profiles: [full]
     image: nginx:1.27.3-alpine
     environment:
-      LB_METHOD: ${LB_METHOD:-round-robin}
+      LB_METHOD: ${LB_METHOD:-least-conn}
     volumes:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/nginx/templates:/etc/nginx/templates:ro
