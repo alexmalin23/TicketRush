@@ -31,7 +31,9 @@ if command -v caffeinate >/dev/null 2>&1; then keep_awake=(caffeinate -is); fi
 
 power="unknown"
 if command -v pmset >/dev/null 2>&1; then
-  power="$(pmset -g batt | head -1 | sed -E "s/.*'(.*)'.*/\1/")" # "AC Power" or "Battery Power"
+  # sed reads all of pmset's output: `head -1` would close the pipe early, and the SIGPIPE
+  # that pmset gets then stops this script under pipefail, silently and only sometimes.
+  power="$(pmset -g batt | sed -nE "1s/.*'(.*)'.*/\1/p")" # "AC Power" or "Battery Power"
 fi
 
 mkdir -p load/results
