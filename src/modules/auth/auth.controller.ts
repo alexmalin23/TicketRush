@@ -1,7 +1,7 @@
 import type { Request } from "express";
 import { Controller, Get, HttpCode, Post, UseGuards, Validate } from "../../core";
 import { API_PREFIX } from "../../common/api";
-import { AuthGuard } from "../../common/guards/auth.guard";
+import { AuthGuard, bearerToken } from "../../common/guards/auth.guard";
 import { UsersService } from "../users/users.service";
 import { LoginInput, LoginSchema, RegisterInput, RegisterSchema } from "./auth.schemas";
 import { AuthService } from "./auth.service";
@@ -26,15 +26,12 @@ export class AuthController {
     return this.authService.login(req.body);
   }
 
-  /**
-   * Access tokens are stateless: the server keeps no session to delete, so logout means the
-   * client discards its token. Revoking a token before it expires needs a shared denylist.
-   */
+  /** Revokes the current token. Other sessions of the same user (other tokens) stay valid. */
   @Post("/auth/logout")
   @HttpCode(204)
   @UseGuards(AuthGuard)
-  logout() {
-    return undefined;
+  async logout(req: Request) {
+    await this.authService.logout(bearerToken(req)!); // AuthGuard guarantees a token
   }
 
   @Get("/me")

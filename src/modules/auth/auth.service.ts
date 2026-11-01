@@ -2,6 +2,7 @@ import { ConflictException, Injectable, UnauthorizedException } from "../../core
 import { UsersModel } from "../users/users.model";
 import { LoginInput, RegisterInput } from "./auth.schemas";
 import { DUMMY_HASH, hashPassword, verifyPassword } from "./password";
+import { TokenDenylist } from "./token-denylist";
 import { TokenService } from "./token.service";
 
 /** What register and login return: the account and a bearer token for the next requests. */
@@ -15,7 +16,8 @@ export interface AuthResult {
 export class AuthService {
   constructor(
     private readonly usersModel: UsersModel,
-    private readonly tokens: TokenService
+    private readonly tokens: TokenService,
+    private readonly denylist: TokenDenylist
   ) {}
 
   async register(input: RegisterInput): Promise<AuthResult> {
@@ -43,5 +45,11 @@ export class AuthService {
 
     const { passwordHash: _hash, ...user } = record;
     return { id: user.id, email: user.email, accessToken: this.tokens.sign(user) };
+  }
+
+  /** Revokes this token on every replica until it would have expired. */
+  async logout(token: string): Promise<void> {
+    const { tokenId, expiresAt } = this.tokens.verify(token);
+    await this.denylist.add(tokenId, expiresAt);
   }
 }

@@ -1,6 +1,7 @@
 import { ConflictException, UnauthorizedException } from "../../src/core";
 import { AuthService } from "../../src/modules/auth/auth.service";
 import { hashPassword, verifyPassword } from "../../src/modules/auth/password";
+import { TokenDenylist } from "../../src/modules/auth/token-denylist";
 import { TokenService } from "../../src/modules/auth/token.service";
 import { UsersModel } from "../../src/modules/users/users.model";
 
@@ -26,7 +27,11 @@ describe("password hashing", () => {
 describe("AuthService", () => {
   const users = { findByEmailWithPassword: jest.fn(), create: jest.fn() };
   const tokens = { sign: jest.fn() };
-  const service = new AuthService(users as unknown as UsersModel, tokens as unknown as TokenService);
+  const service = new AuthService(
+    users as unknown as UsersModel,
+    tokens as unknown as TokenService,
+    {} as TokenDenylist
+  );
   const user = { id: 1, email: "a@b.co", role: "user" as const, createdAt: new Date() };
 
   beforeEach(() => {

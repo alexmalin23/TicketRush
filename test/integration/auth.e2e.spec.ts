@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import { ModexApplication } from "../../src/core";
+import { RedisService } from "../../src/database/redis.service";
 import { bearer, createTestApp, createUser, http, resetDatabase } from "../helpers/test-app";
 
 const API = "/api/v1";
@@ -69,6 +70,62 @@ describe("Auth (e2e)", () => {
       const { token } = await createUser(app, "dana@example.com");
       await http(app).post(`${API}/auth/logout`).set(bearer(token)).expect(204);
     });
+  });
+
+  describe("revocation", () => {
+    const login = async (email: string) =>
+      (await http(app).post(`${API}/auth/login`).send({ email, password: "password123" }).expect(200)).body.accessToken as string;
+
+    it("a logged-out token is refused everywhere, though its signature is still valid", async () => {
+      const { token } = await createUser(app, "dana@example.com");
+      await http(app).post(`${API}/auth/logout`).set(bearer(token)).expect(204);
+
+      const res = await http(app).get(`${API}/me`).set(bearer(token)).expect(401);
+      expect(res.body).toMatchObject({ code: "UNAUTHORIZED", message: "Token has been revoked" });
+      await http(app).post(`${API}/auth/logout`).set(bearer(token)).expect(401);
+    });
+
+    it("logging out ends one session: the user's other tokens keep working", async () => {
+      const { token: first } = await createUser(app, "dana@example.com");
+      const second = await login("dana@example.com");
+
+      await http(app).post(`${API}/auth/logout`).set(bearer(first)).expect(204);
+      await http(app).get(`${API}/me`).set(bearer(second)).expect(200);
+    });
+
+    it("the denylist entry expires with the token, so the list never outgrows live tokens", async () => {
+      const { token } = await createUser(app, "dana@example.com");
+      await http(app).post(`${API}/auth/logout`).set(bearer(token)).expect(204);
+
+      const { jti, exp } = jwt.decode(token) as { jti: string; exp: number };
+      const ttl = await app.get(RedisService).client.ttl(`revoked-token:${jti}`);
+      const remaining = exp - Math.floor(Date.now() / 1000);
+      expect(ttl).toBeGreaterThan(remaining - 5);
+      expect(ttl).toBeLessThanOrEqual(remaining);
+    });
+
+    it("rejects a validly signed token without an id: it could never be revoked", async () => {
+      const token = jwt.sign({ email: "x", role: "user" }, process.env.JWT_SECRET!, { subject: "1", expiresIn: "1h" });
+      await http(app).get(`${API}/me`).set(bearer(token)).expect(401);
+    });
+
+    it("answers 503, not 401, while Redis is unreachable: revocation cannot be checked", async () => {
+      const { token } = await createUser(app, "dana@example.com");
+      const redis = app.get(RedisService).client;
+      redis.disconnect(); // a real lost connection, not a mock
+
+      try {
+        const res = await http(app).get(`${API}/me`).set(bearer(token)).expect(503);
+        expect(res.body.code).toBe("SERVICE_UNAVAILABLE");
+        await http(app).post(`${API}/auth/logout`).set(bearer(token)).expect(503);
+      } finally {
+        await redis.connect();
+      }
+      await http(app).get(`${API}/me`).set(bearer(token)).expect(200);
+    });
+  });
+
+  describe("bad tokens", () => {
 
     // Every way a token can be wrong, against every route that requires one.
     const routes = [

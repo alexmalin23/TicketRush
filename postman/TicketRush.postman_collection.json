@@ -231,7 +231,7 @@
                 "me"
               ]
             },
-            "description": "200 `{ id, email }` of the token's user, read fresh from the database. 401 `UNAUTHORIZED` without a valid token."
+            "description": "200 `{ id, email }` of the token's user, read fresh from the database. 401 `UNAUTHORIZED` without a valid token or with a revoked one."
           }
         },
         {
@@ -251,7 +251,7 @@
                 "logout"
               ]
             },
-            "description": "204. Tokens are stateless: the client discards its token."
+            "description": "204. Revokes this token on every API instance until it would have expired (denylist in Redis); the user's other tokens stay valid. Afterwards the token gets 401 `UNAUTHORIZED` \"Token has been revoked\". Every authenticated route answers 503 `SERVICE_UNAVAILABLE` while Redis is unreachable: revocation cannot be checked."
           }
         }
       ]
