@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from "../../core";
+import { Inject, Injectable, NotFoundException } from "../../core";
+import { HOLD_STORE, HoldStore } from "../holds/hold-store";
 import { SeatsModel, SeatView, SectionAvailability, SectionPrice } from "../seats/seats.model";
 import { EventDetail, EventsModel, EventSummary } from "./events.model";
 
@@ -6,7 +7,9 @@ import { EventDetail, EventsModel, EventSummary } from "./events.model";
 export class EventsService {
   constructor(
     private readonly eventsModel: EventsModel,
-    private readonly seatsModel: SeatsModel
+    private readonly seatsModel: SeatsModel,
+    // Which seats are free depends on where holds live.
+    @Inject(HOLD_STORE) private readonly holds: HoldStore
   ) {}
 
   findAll(): Promise<EventSummary[]> {
@@ -21,12 +24,12 @@ export class EventsService {
   /** The cheap summary: counts only, so clients can poll it without loading every seat. */
   async availability(id: number): Promise<{ sections: SectionAvailability[] }> {
     await this.requireEvent(id);
-    return { sections: await this.seatsModel.availabilityByEvent(id) };
+    return { sections: await this.holds.availability(id) };
   }
 
   async seatMap(id: number, section: string): Promise<{ section: string; seats: SeatView[] }> {
     await this.requireEvent(id);
-    const seats = await this.seatsModel.bySection(id, section);
+    const seats = await this.holds.seatMap(id, section);
     if (seats.length === 0) throw new NotFoundException(`Section ${section} not found`);
     return { section, seats };
   }
