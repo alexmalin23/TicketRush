@@ -11,11 +11,11 @@ import { holdLimitExceeded, seatUnavailable } from "./postgres-hold-store";
  */
 export const holdKeys = {
   /** The hold itself: value = buyer id, TTL = the hold's lifetime. The source of truth. */
-  seat: (eventId: number, seatId: number) => `hold:{${eventId}}:seat:${seatId}`,
+  seat: (eventId: number, seatId: number) => `seat-hold:{${eventId}}:${seatId}`,
   /** Index: the buyer's held seats, score = expiry (ms). For "my holds" and the per-buyer limit. */
-  user: (eventId: number, userId: number) => `holds:{${eventId}}:user:${userId}`,
+  user: (eventId: number, userId: number) => `user-holds:{${eventId}}:${userId}`,
   /** Index: held seats of a section, score = expiry (ms). For the seat map and availability. */
-  section: (eventId: number, section: string) => `held:{${eventId}}:section:${section}`,
+  section: (eventId: number, section: string) => `section-holds:{${eventId}}:${section}`,
 };
 
 /**

@@ -63,7 +63,7 @@ export class HoldRateLimitGuard implements CanActivate {
     const windowMs = this.env.HOLD_RATE_WINDOW_SECONDS * 1000;
     // EVAL resends the script each time; at hold rates (a few per buyer per minute) caching it
     // with EVALSHA would save bytes, not time.
-    const waitMs = await this.redis.client.eval(SLIDING_LOG, 1, `hold-attempts:${userId}`, windowMs, this.env.HOLD_RATE_LIMIT, randomUUID());
+    const waitMs = await this.redis.client.eval(SLIDING_LOG, 1, `rate-limit:hold:${userId}`, windowMs, this.env.HOLD_RATE_LIMIT, randomUUID());
     return Number(waitMs);
   }
 
