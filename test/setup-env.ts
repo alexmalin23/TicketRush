@@ -14,7 +14,7 @@ process.env.REDIS_URL = process.env.TEST_REDIS_URL ?? "redis://localhost:6379/1"
 process.env.PAYMENTS_PROVIDER_URL = "http://127.0.0.1:1";
 process.env.JWT_SECRET ??="test-secret-at-least-16-chars";
 // Tests reuse user ids after every reset and the hold rate limiter remembers them in memory:
-// effectively off here, except in the spec that tests it.
-process.env.HOLD_RATE_LIMIT ??= "100000";
+// effectively off here, except in the spec that tests it. Forced, not ??=: .env may set it.
+process.env.HOLD_RATE_LIMIT = "100000";
 // Quiet by default; run with TEST_LOG_LEVEL=info to see request logs.
 process.env.LOG_LEVEL = process.env.TEST_LOG_LEVEL ?? "silent";
