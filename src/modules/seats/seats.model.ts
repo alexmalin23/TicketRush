@@ -123,6 +123,47 @@ export class SeatsModel {
     return rows;
   }
 
+  /** Seat details for ids kept outside Postgres (Redis holds), ordered by id. Unknown ids are skipped. */
+  async findByIds(eventId: number, seatIds: number[], db: Queryable = this.database): Promise<Omit<HeldSeat, "heldUntil">[]> {
+    const { rows } = await db.query<Omit<HeldSeat, "heldUntil">>(
+      `SELECT id, section, row_label AS "row", number, price_cents AS "priceCents"
+         FROM seats
+        WHERE event_id = $1 AND id = ANY($2::bigint[])
+        ORDER BY id`,
+      [eventId, seatIds]
+    );
+    return rows;
+  }
+
+  /** The sold seats among `seatIds`. */
+  async soldAmong(eventId: number, seatIds: number[], db: Queryable = this.database): Promise<number[]> {
+    const { rows } = await db.query<{ id: number }>(
+      `SELECT id FROM seats WHERE event_id = $1 AND id = ANY($2::bigint[]) AND status = 'sold'`,
+      [eventId, seatIds]
+    );
+    return rows.map((r) => Number(r.id));
+  }
+
+  /** Bought seats of this user in the event (paid or issued orders): the Postgres half of the per-user limit. */
+  async countBoughtSeats(eventId: number, userId: number, db: Queryable = this.database): Promise<number> {
+    const { rows } = await db.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM order_items i JOIN orders o ON o.id = i.order_id
+        WHERE o.event_id = $1 AND o.user_id = $2 AND o.status IN ('paid', 'issued')`,
+      [eventId, userId]
+    );
+    return rows[0].count;
+  }
+
+  /** The seats among `seatIds` that belong to an order awaiting payment: they must not be released. */
+  async inPendingOrders(eventId: number, seatIds: number[], db: Queryable = this.database): Promise<number[]> {
+    const { rows } = await db.query<{ id: number }>(
+      `SELECT i.seat_id AS id FROM order_items i JOIN orders o ON o.id = i.order_id
+        WHERE o.event_id = $1 AND o.status = 'pending_payment' AND i.seat_id = ANY($2::bigint[])`,
+      [eventId, seatIds]
+    );
+    return rows.map((r) => Number(r.id));
+  }
+
   /** Seats this user holds (unexpired) or has bought in the event: what the per-user limit counts. */
   async countUserSeats(eventId: number, userId: number, db: Queryable = this.database): Promise<number> {
     const { rows } = await db.query<{ count: number }>(

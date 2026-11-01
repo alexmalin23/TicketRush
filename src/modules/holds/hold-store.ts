@@ -1,6 +1,8 @@
 import type { FactoryProvider } from "../../core";
+import { ENV, Env } from "../../config/env";
 import type { HeldSeat, SeatView, SectionAvailability } from "../seats/seats.model";
 import { PostgresHoldStore } from "./postgres-hold-store";
+import { RedisHoldStore } from "./redis-hold-store";
 
 /** DI token for the active hold store: constructor(@Inject(HOLD_STORE) holds: HoldStore) */
 export const HOLD_STORE = "HOLD_STORE";
@@ -23,9 +25,10 @@ export interface HoldStore {
   seatMap(eventId: number, section: string): Promise<SeatView[]>;
 }
 
-/** The active store, picked once at startup. Registered in app.ts with the other infrastructure. */
+/** Picks the store once at startup (HOLD_STORE). Registered in app.ts with the other infrastructure. */
 export const holdStoreProvider: FactoryProvider = {
   provide: HOLD_STORE,
-  useFactory: (postgres: PostgresHoldStore) => postgres,
-  inject: [PostgresHoldStore],
+  useFactory: (env: Env, postgres: PostgresHoldStore, redis: RedisHoldStore) =>
+    env.HOLD_STORE === "redis" ? redis : postgres,
+  inject: [ENV, PostgresHoldStore, RedisHoldStore],
 };
