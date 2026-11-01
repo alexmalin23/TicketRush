@@ -92,7 +92,7 @@ export class OrdersService {
 
   /**
    * Step 2: charge. The provider key is derived from the order, so every attempt for this order is
-   * the same payment: a retry after a timeout learns the real outcome and can never charge twice.
+   * the same payment: a retry after a timeout finds out the real outcome and can never charge twice.
    */
   private async chargeWithRetries(orderId: string, amountCents: number) {
     for (let attempt = 1; attempt <= CHARGE_ATTEMPTS; attempt++) {
