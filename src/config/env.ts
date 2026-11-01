@@ -30,6 +30,8 @@ const EnvSchema = z.object({
   LOG_FORMAT: z.enum(["text", "json"]).default("text"),
 
   HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  /** Where hold attempts are counted: "redis" (shared by every replica) or "memory" (per process, benchmark baseline). */
+  RATE_LIMIT_STORE: z.enum(["memory", "redis"]).default("redis"),
   /** Hold attempts one buyer may make per window, then 429. */
   HOLD_RATE_LIMIT: z.coerce.number().int().positive().default(5),
   HOLD_RATE_WINDOW_SECONDS: z.coerce.number().int().positive().default(10),

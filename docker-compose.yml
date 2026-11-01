@@ -9,6 +9,8 @@ x-app-env: &app-env
   # Per replica: replicas x DB_POOL_MAX must stay under Postgres max_connections (100).
   DB_POOL_MAX: ${DB_POOL_MAX:-10}
   REDIS_URL: redis://redis:6379
+  # memory reproduces the per-replica limiter baseline (limit x replicas).
+  RATE_LIMIT_STORE: ${RATE_LIMIT_STORE:-redis}
   # Local development value only; real environments inject a secret.
   JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
   LOG_LEVEL: ${LOG_LEVEL:-info}
