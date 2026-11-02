@@ -42,6 +42,10 @@ const EnvSchema = z.object({
   PAYMENTS_PROVIDER_URL: z.url().default("http://localhost:3100"),
   /** How long a charge may take before its outcome is treated as unknown. */
   PAYMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  /** How often each replica looks for orders left pending_payment by a crash or a timeout. 0 = never. */
+  RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().nonnegative().default(5),
+  /** An order pending this long has no request working on it anymore (3 charge attempts take ~9 s). */
+  RECONCILE_AFTER_SECONDS: z.coerce.number().int().positive().default(30),
 
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),

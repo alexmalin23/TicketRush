@@ -3,9 +3,11 @@ import { ModexApplication } from "../../src/core";
 import { DatabaseService } from "../../src/database/database.service";
 import { RedisService } from "../../src/database/redis.service";
 import { holdKeys } from "../../src/modules/holds/redis-hold-store";
+import { OrdersModel } from "../../src/modules/orders/orders.model";
+import { OrdersService } from "../../src/modules/orders/orders.service";
 import { buildScenario, holdRequest, Scenario } from "../helpers/scenario";
 import { ProviderOverrides, startStack } from "../helpers/stack";
-import { bearer, http } from "../helpers/test-app";
+import { bearer, createTestApp, http } from "../helpers/test-app";
 
 const API = "/api/v1";
 
@@ -337,5 +339,79 @@ describe("Orders (e2e)", () => {
       await new Promise((resolve) => setTimeout(resolve, 2100)); // the provider finishes in the background
       expect((await ledger()).totals.charges).toBe(1); // the first buyer's only: the second was never charged
     }, 15_000);
+  });
+
+  describe.each(["postgres", "redis"])("the reconciler, holds in %s", (store) => {
+    useStack({}, { HOLD_STORE: store, RECONCILE_AFTER_SECONDS: "1" });
+
+    /** What a replica that died right after creating the order leaves behind. */
+    const stuckOrder = async (seatId: number, secondsAgo = 60) => {
+      const orders = app.get(OrdersModel);
+      const created = await orders.create(s.userIds[0], s.eventId, 45000);
+      await orders.addItems(created.id, [{ id: seatId, priceCents: 45000 }]);
+      await db.query("UPDATE orders SET updated_at = now() - make_interval(secs => $2) WHERE id = $1", [created.id, secondsAgo]);
+      return created.id;
+    };
+    const reconcile = () => app.get(OrdersService).reconcileStuckOrders();
+    const orderStatus = async (id: string) => (await db.query("SELECT status FROM orders WHERE id = $1", [id])).rows[0].status;
+
+    it("finishes an order charged before the crash, without charging again", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const id = await stuckOrder(s.seatIds[0]);
+      await request(mockUrl).post("/charges").send({ idempotencyKey: `order-${id}`, amountCents: 45000 }).expect(200);
+
+      expect(await reconcile()).toBe(1);
+
+      expect(await orderStatus(id)).toBe("issued");
+      expect(await seatState(s.seatIds[0])).toEqual({ status: "sold", held_by: null });
+      expect((await ledger()).totals).toMatchObject({ charges: 1, succeeded: 1 });
+    });
+
+    it("finishes an order the crash left uncharged: the buyer asked for it", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const id = await stuckOrder(s.seatIds[0]);
+
+      await reconcile();
+
+      expect(await orderStatus(id)).toBe("issued");
+      expect((await ledger()).totals).toMatchObject({ charges: 1, succeeded: 1 });
+    });
+
+    it("two replicas at the same moment: each order is finished once", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const id = await stuckOrder(s.seatIds[0]);
+
+      const looked = await Promise.all([reconcile(), reconcile(), reconcile()]);
+
+      expect(looked.reduce((a, b) => a + b, 0)).toBe(1);
+      expect(await orderStatus(id)).toBe("issued");
+      expect((await ledger()).totals.charges).toBe(1);
+    });
+
+    it("a replica that cannot reach the provider gives the order back to the others", async () => {
+      const saved = { ...process.env };
+      Object.assign(process.env, { HOLD_STORE: store, RECONCILE_AFTER_SECONDS: "1" }); // provider: 127.0.0.1:1
+      const broken = await createTestApp().finally(() => (process.env = saved));
+      try {
+        await hold(0, [s.seatIds[0]]).expect(201);
+        const id = await stuckOrder(s.seatIds[0]);
+
+        expect(await broken.get(OrdersService).reconcileStuckOrders()).toBe(1);
+        expect(await orderStatus(id)).toBe("pending_payment");
+
+        expect(await reconcile()).toBe(1); // at once, not after the lease would have run out
+        expect(await orderStatus(id)).toBe("issued");
+      } finally {
+        await broken.close();
+      }
+    });
+
+    it("leaves an order alone while its request may still be working on it", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      const id = await stuckOrder(s.seatIds[0], 0);
+
+      expect(await reconcile()).toBe(0);
+      expect(await orderStatus(id)).toBe("pending_payment");
+    });
   });
 });

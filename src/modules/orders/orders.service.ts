@@ -1,4 +1,5 @@
-import { ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException } from "../../core";
+import { ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException, OnInit, OnShutdown } from "../../core";
+import { ENV, Env } from "../../config/env";
 import { DatabaseService } from "../../database/database.service";
 import { EventsModel } from "../events/events.model";
 import { HOLD_STORE, HoldStore } from "../holds/hold-store";
@@ -10,12 +11,17 @@ import { CreateOrderInput } from "./orders.schemas";
 
 /** A charge that times out may or may not have happened; asking again with the same key is safe. */
 const CHARGE_ATTEMPTS = 3;
+/** Orders finished per reconciler run and replica; the rest wait for the next run. */
+const RECONCILE_BATCH = 20;
 
 @Injectable()
-export class OrdersService {
+export class OrdersService implements OnInit, OnShutdown {
   private readonly logger: Logger;
+  private reconcileTimer?: NodeJS.Timeout;
+  private reconciling: Promise<number> = Promise.resolve(0);
 
   constructor(
+    @Inject(ENV) private readonly env: Env,
     logger: Logger,
     private readonly database: DatabaseService,
     private readonly eventsModel: EventsModel,
@@ -26,6 +32,52 @@ export class OrdersService {
     private readonly idempotency: IdempotencyService
   ) {
     this.logger = logger.child("Orders");
+  }
+
+  /** Every replica runs the reconciler; leaseStuck makes sure each order is finished by one of them. */
+  onInit(): void {
+    if (this.env.RECONCILE_INTERVAL_SECONDS === 0) return;
+    this.reconcileTimer = setInterval(() => {
+      this.reconciling = this.reconciling.then(() => this.reconcileStuckOrders());
+    }, this.env.RECONCILE_INTERVAL_SECONDS * 1000);
+  }
+
+  async onShutdown(): Promise<void> {
+    clearInterval(this.reconcileTimer);
+    await this.reconciling; // a run in progress finishes before the database pool closes
+  }
+
+  /**
+   * Finishes orders left pending_payment because the request that created them died (crash,
+   * restart) or never got the charge outcome (timeout). Asking the provider again with the
+   * order's key is safe: it returns the charge already made, or makes the one the buyer asked for.
+   * Every step is a guarded transition, so a request still working on the same order cannot
+   * finish it twice. Returns how many orders were looked at.
+   */
+  async reconcileStuckOrders(): Promise<number> {
+    let stuck;
+    try {
+      stuck = await this.ordersModel.leaseStuck(this.env.RECONCILE_AFTER_SECONDS, RECONCILE_BATCH);
+    } catch (error) {
+      this.logger.error("Reconciler could not read stuck orders", { error: String(error) });
+      return 0;
+    }
+    for (const order of stuck) {
+      try {
+        const outcome = await this.payments.charge({ idempotencyKey: `order-${order.id}`, amountCents: order.totalCents });
+        await this.ordersModel.recordPayment(order.id, outcome.status, "providerRef" in outcome ? outcome.providerRef : null);
+        if (outcome.status === "succeeded") await this.sellAndIssue(order.id, order.userId, order.eventId, order.seatIds);
+        if (outcome.status === "declined") await this.releaseAfterDecline(order.id, order.userId, order.eventId, order.seatIds);
+        // timeout: still unknown; the lease runs out and the next run asks again.
+        this.logger.info("Reconciled a stuck order", { orderId: order.id, outcome: outcome.status });
+      } catch (error) {
+        // Provider unreachable from this replica, or a sale that failed. Keeping the lease would let a
+        // replica that can never succeed take the order again every time; give it back instead.
+        this.logger.error("Could not reconcile an order", { orderId: order.id, error: String(error) });
+        await this.ordersModel.releaseLease(order.id, this.env.RECONCILE_AFTER_SECONDS).catch(() => undefined);
+      }
+    }
+    return stuck.length;
   }
 
   /** A retry with the same Idempotency-Key never creates a second order or a second charge. */

@@ -21,6 +21,15 @@ export interface Order {
   createdAt: Date;
 }
 
+/** An order no request is working on anymore: what the reconciler needs to finish it. */
+export interface StuckOrder {
+  id: string;
+  userId: number;
+  eventId: number;
+  totalCents: number;
+  seatIds: number[];
+}
+
 /** An order row without its items: what a status change needs. */
 interface OrderRow {
   id: string;
@@ -93,6 +102,34 @@ export class OrdersModel {
       [seatIds]
     );
     return rows[0]?.id ?? null;
+  }
+
+  /**
+   * Takes up to `limit` orders pending for `afterSeconds` and leases them: updated_at moves to now,
+   * so no replica picks them again for another `afterSeconds`. SKIP LOCKED: replicas running this
+   * at the same moment split the orders instead of waiting on each other. No lock outlives the
+   * statement, so nothing is held while the provider is asked.
+   */
+  async leaseStuck(afterSeconds: number, limit: number): Promise<StuckOrder[]> {
+    const { rows } = await this.database.query<StuckOrder>(
+      `UPDATE orders o SET updated_at = now()
+        WHERE o.id IN (SELECT id FROM orders
+                        WHERE status = 'pending_payment' AND updated_at < now() - make_interval(secs => $1)
+                        ORDER BY updated_at LIMIT $2
+                        FOR UPDATE SKIP LOCKED)
+        RETURNING o.id, o.user_id AS "userId", o.event_id AS "eventId", o.total_cents AS "totalCents",
+          ARRAY(SELECT seat_id::int FROM order_items i WHERE i.order_id = o.id ORDER BY seat_id) AS "seatIds"`,
+      [afterSeconds, limit]
+    );
+    return rows;
+  }
+
+  /** Ends a lease early, so the next run of any replica can take the order again. */
+  async releaseLease(orderId: string, afterSeconds: number): Promise<void> {
+    await this.database.query(
+      "UPDATE orders SET updated_at = now() - make_interval(secs => $2) WHERE id = $1 AND status = 'pending_payment'",
+      [orderId, afterSeconds]
+    );
   }
 
   /** The next payment attempt number for an order: attempts are 1, 2, 3... and unique per order. */
