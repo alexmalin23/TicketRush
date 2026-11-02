@@ -37,9 +37,11 @@ const unexpected = new Counter("unexpected_answers"); // anything outside the do
 const invariantViolations = new Counter("invariant_violations");
 const serverOrdersIssued = new Counter("server_orders_issued");
 const serverSeatsSold = new Counter("server_seats_sold");
+const awaitingReconciliation = new Counter("awaiting_reconciliation"); // charged, still no ticket at the end
 
 export const options = {
   setupTimeout: "3m",
+  teardownTimeout: "2m", // room for the reconciler to finish orders a crash left behind
   scenarios: {
     onsale: {
       executor: "ramping-vus",
@@ -56,6 +58,7 @@ export const options = {
   thresholds: {
     unexpected_answers: ["count==0"],
     invariant_violations: ["count==0"], // the correctness claim
+    awaiting_reconciliation: ["count==0"], // every buyer who paid ends up with a ticket
     ...routeThresholds(ROUTES),
     "http_req_failed{phase:main}": ["rate<0.001"], // unexpected errors under the spike
   },
@@ -132,14 +135,23 @@ function order(token, seatId) {
   else unexpected.add(1);
 }
 
+const RECONCILE_WAIT_SECONDS = Number(__ENV.RECONCILE_WAIT_SECONDS || 90);
+
 export function teardown() {
-  const res = request("GET", `/api/v1/dev/events/${EVENT_ID}/invariants`, { name: "GET /api/v1/dev/events/:id/invariants", phase: "check" });
+  // Orders a crashed replica left pending are finished by the reconciler, not by the buyer: wait for it.
+  let res;
+  for (let waited = 0; ; waited += 5) {
+    res = request("GET", `/api/v1/dev/events/${EVENT_ID}/invariants`, { name: "GET /api/v1/dev/events/:id/invariants", phase: "check" });
+    if (res.status !== 200 || res.json("awaitingReconciliation") === 0 || waited >= RECONCILE_WAIT_SECONDS) break;
+    sleep(5);
+  }
   const ok = check(res, { "invariants: endpoint answered": (r) => r.status === 200 });
   if (!ok) {
     invariantViolations.add(1); // not being able to prove correctness is a failure too
     return;
   }
   const result = res.json();
+  awaitingReconciliation.add(result.awaitingReconciliation);
   invariantViolations.add(result.violations);
   serverOrdersIssued.add(result.totals.ordersIssued);
   serverSeatsSold.add(result.totals.seatsSold);

@@ -28,8 +28,8 @@ export interface Invariants {
     chargesWithoutOrder: number;
   };
   /**
-   * Not a bug: orders whose charge succeeded while the buyer never got an answer (pending_payment).
-   * They wait for a reconciliation worker; counted so they are visible, not hidden.
+   * Orders whose charge succeeded while the buyer never got an answer (pending_payment). Not a bug
+   * for up to RECONCILE_AFTER_SECONDS plus one run: the reconciler finishes them.
    */
   awaitingReconciliation: number;
   totals: { ordersIssued: number; ordersFailed: number; ordersPending: number; ticketsIssued: number; seatsSold: number; capturedCents: number };
