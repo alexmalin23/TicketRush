@@ -1,10 +1,9 @@
 import { ConflictException, HttpException, Inject, Injectable, Logger, NotFoundException } from "../../core";
-import { ENV, Env } from "../../config/env";
 import { DatabaseService } from "../../database/database.service";
 import { EventsModel } from "../events/events.model";
+import { HOLD_STORE, HoldStore } from "../holds/hold-store";
 import { IdempotencyService, StoredResponse } from "../idempotency/idempotency.service";
 import { PaymentsClient } from "../payments/payments.client";
-import { SeatsModel } from "../seats/seats.model";
 import { Ticket, TicketsModel } from "../tickets/tickets.model";
 import { Order, OrdersModel } from "./orders.model";
 import { CreateOrderInput } from "./orders.schemas";
@@ -17,11 +16,10 @@ export class OrdersService {
   private readonly logger: Logger;
 
   constructor(
-    @Inject(ENV) private readonly env: Env,
     logger: Logger,
     private readonly database: DatabaseService,
     private readonly eventsModel: EventsModel,
-    private readonly seatsModel: SeatsModel,
+    @Inject(HOLD_STORE) private readonly holds: HoldStore,
     private readonly ordersModel: OrdersModel,
     private readonly ticketsModel: TicketsModel,
     private readonly payments: PaymentsClient,
@@ -65,8 +63,8 @@ export class OrdersService {
       const event = await this.eventsModel.findById(input.eventId, client);
       if (!event) throw new NotFoundException(`Event ${input.eventId} not found`);
 
-      // FOR UPDATE: two orders for the same seats serialize here; the second one waits, then sees the first.
-      const held = await this.seatsModel.lockSeatsHeldByUser(input.eventId, userId, seatIds, client);
+      // Locks the seats (two orders for the same seats serialize here) and extends the hold for the payment.
+      const held = await this.holds.claimForOrder(input.eventId, userId, seatIds, client);
       if (held.length < seatIds.length) {
         const heldIds = new Set(held.map((seat) => seat.id));
         throw new ConflictException(
@@ -84,8 +82,6 @@ export class OrdersService {
       const totalCents = held.reduce((sum, seat) => sum + seat.priceCents, 0);
       const order = await this.ordersModel.create(userId, input.eventId, totalCents, client);
       await this.ordersModel.addItems(order.id, held, client);
-      // Payment can take seconds; the hold must outlive it or the seats could be sold to someone else.
-      await this.seatsModel.extendHolds(seatIds, this.env.HOLD_TTL_SECONDS, client);
       return { orderId: order.id, totalCents };
     });
   }
@@ -118,10 +114,10 @@ export class OrdersService {
    * must never be visible. If anything fails the order stays pending_payment with its seats held,
    * which a reconciliation can recognise (a successful charge, no tickets).
    */
-  private sellAndIssue(orderId: string, userId: number, eventId: number, seatIds: number[]): Promise<void> {
-    return this.database.transaction(async (client) => {
+  private async sellAndIssue(orderId: string, userId: number, eventId: number, seatIds: number[]): Promise<void> {
+    await this.database.transaction(async (client) => {
       if (!(await this.ordersModel.moveStatus(orderId, "pending_payment", "paid", client))) return; // already decided
-      const sold = await this.seatsModel.sellHeldSeats(userId, seatIds, client);
+      const sold = await this.holds.sell(userId, seatIds, client);
       if (sold !== seatIds.length) {
         this.logger.error("Charged but seats could not be sold", { orderId, expected: seatIds.length, sold });
         throw new Error(`Order ${orderId}: charged but only ${sold} of ${seatIds.length} seats could be sold`);
@@ -129,14 +125,19 @@ export class OrdersService {
       await this.ticketsModel.issueForSeats(orderId, eventId, seatIds, client);
       await this.ordersModel.moveStatus(orderId, "paid", "issued", client);
     });
+    // Holds kept in Redis would otherwise outlive the sale, and availability would count the seat
+    // twice (sold in Postgres and held in Redis) until they expire. A no-op for Postgres holds.
+    await this.holds.release(eventId, userId, seatIds);
   }
 
-  /** Transaction 3b: a decline is final. The order fails and, per the rules, the seats are released at once. */
-  private releaseAfterDecline(orderId: string, userId: number, eventId: number, seatIds: number[]): Promise<void> {
-    return this.database.transaction(async (client) => {
-      if (!(await this.ordersModel.moveStatus(orderId, "pending_payment", "failed", client))) return;
-      await this.seatsModel.releaseHoldsOf(eventId, userId, seatIds, client);
-    });
+  /**
+   * Step 3b: a decline is final. The order fails and, per the rules, the seats are released at once.
+   * Release runs after the status change, since seats in an order awaiting payment are never released;
+   * if the process dies in between, the holds simply expire.
+   */
+  private async releaseAfterDecline(orderId: string, userId: number, eventId: number, seatIds: number[]): Promise<void> {
+    if (!(await this.ordersModel.moveStatus(orderId, "pending_payment", "failed"))) return;
+    await this.holds.release(eventId, userId, seatIds);
   }
 
   /** The card was never touched: fail the order but keep the hold so the buyer can try again right away. */

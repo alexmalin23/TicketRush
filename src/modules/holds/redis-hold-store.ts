@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "../../core";
 import { ENV, Env } from "../../config/env";
+import type { Queryable } from "../../database/database.constants";
 import { RedisService } from "../../database/redis.service";
 import { HeldSeat, SeatsModel, SeatView, SectionAvailability } from "../seats/seats.model";
 import type { HoldStore } from "./hold-store";
@@ -54,6 +55,38 @@ for i = 1, n do
   redis.call('ZADD', KEYS[1], expiresAt, ARGV[4 + i])
   redis.call('ZADD', KEYS[1 + n + i], expiresAt, ARGV[4 + i])
   -- An index lives as long as its latest hold: no key outlives the holds it lists.
+  redis.call('PEXPIREAT', KEYS[1], expiresAt)
+  redis.call('PEXPIREAT', KEYS[1 + n + i], expiresAt)
+end
+return {0, expiresAt}
+`;
+
+/**
+ * Proves the buyer still holds every seat and, only then, gives them all a fresh expiry for the
+ * payment. Check and extend are one step: a hold cannot expire, or be taken, between the two.
+ *
+ * KEYS/ARGV as HOLD_SEATS, ARGV: [userId, ttlMs, seatId1..N]
+ * Returns: {0, expiresAtMs}          every seat held by this buyer, all extended
+ *          {1, seatId, seatId, ...}   these seats are not held by this buyer; nothing was extended
+ */
+const CLAIM_SEATS = `
+local n = (#KEYS - 1) / 2
+local lost = {}
+for i = 1, n do
+  if redis.call('GET', KEYS[1 + i]) ~= ARGV[1] then
+    table.insert(lost, ARGV[2 + i])
+  end
+end
+if #lost > 0 then
+  return {1, unpack(lost)}
+end
+
+local time = redis.call('TIME')
+local expiresAt = time[1] * 1000 + math.floor(time[2] / 1000) + tonumber(ARGV[2])
+for i = 1, n do
+  redis.call('PEXPIREAT', KEYS[1 + i], expiresAt)
+  redis.call('ZADD', KEYS[1], expiresAt, ARGV[2 + i])
+  redis.call('ZADD', KEYS[1 + n + i], expiresAt, ARGV[2 + i])
   redis.call('PEXPIREAT', KEYS[1], expiresAt)
   redis.call('PEXPIREAT', KEYS[1 + n + i], expiresAt)
 end
@@ -148,6 +181,36 @@ export class RedisHoldStore implements HoldStore {
       userId,
       ...seats.map((seat) => seat.id)
     );
+  }
+
+  /**
+   * Two stores, two questions: Redis says who holds the seat, Postgres says whether it is still
+   * unsold. The row lock comes first, so two orders for the same seats serialize on it exactly as
+   * with Postgres holds; the pending-order check after this call then refuses the second one.
+   */
+  async claimForOrder(eventId: number, userId: number, seatIds: number[], db: Queryable) {
+    const seats = await this.seatsModel.lockUnsoldSeats(eventId, seatIds, db);
+    // A seat sold in Postgres is refused even if a stale Redis key still names this buyer.
+    if (seats.length < seatIds.length) return seats;
+
+    const result = (await this.redis.client.eval(
+      CLAIM_SEATS,
+      1 + 2 * seats.length,
+      holdKeys.user(eventId, userId),
+      ...seats.map((seat) => holdKeys.seat(eventId, seat.id)),
+      ...seats.map((seat) => holdKeys.section(eventId, seat.section)),
+      userId,
+      this.env.HOLD_TTL_SECONDS * 1000,
+      ...seats.map((seat) => seat.id)
+    )) as number[];
+
+    const [status, ...lost] = result.map(Number);
+    return status === 0 ? seats : seats.filter((seat) => !lost.includes(seat.id));
+  }
+
+  /** Conditional on Postgres alone: the hold was proven in claimForOrder, before the charge. */
+  sell(_userId: number, seatIds: number[], db: Queryable): Promise<number> {
+    return this.seatsModel.sellUnsoldSeats(seatIds, db);
   }
 
   async availability(eventId: number): Promise<SectionAvailability[]> {

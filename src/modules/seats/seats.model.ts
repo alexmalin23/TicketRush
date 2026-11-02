@@ -242,6 +242,34 @@ export class SeatsModel {
   }
 
   /**
+   * For holds kept in Redis, where the row only knows available / sold: locks the unsold seats among
+   * `seatIds` until the transaction ends. Fewer rows than requested means a seat is already sold.
+   */
+  async lockUnsoldSeats(
+    eventId: number,
+    seatIds: number[],
+    db: Queryable
+  ): Promise<{ id: number; section: string; priceCents: number }[]> {
+    const { rows } = await db.query<{ id: number; section: string; priceCents: number }>(
+      `SELECT id, section, price_cents AS "priceCents" FROM seats
+        WHERE event_id = $1 AND id = ANY($2::bigint[]) AND status = 'available'
+        ORDER BY id
+        FOR UPDATE`,
+      [eventId, seatIds]
+    );
+    return rows;
+  }
+
+  /** The conditional sale for holds kept in Redis: a seat sold by anyone else does not match. */
+  async sellUnsoldSeats(seatIds: number[], db: Queryable): Promise<number> {
+    const { rowCount } = await db.query(
+      "UPDATE seats SET status = 'sold' WHERE id = ANY($1::bigint[]) AND status = 'available'",
+      [seatIds]
+    );
+    return rowCount ?? 0;
+  }
+
+  /**
    * Turns held seats into sold seats, but only if this buyer still holds them. The returned count
    * lets the caller prove every seat was really sold; fewer than expected means the hold was lost.
    */

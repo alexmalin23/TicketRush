@@ -1,5 +1,6 @@
 import type { FactoryProvider } from "../../core";
 import { ENV, Env } from "../../config/env";
+import type { Queryable } from "../../database/database.constants";
 import type { HeldSeat, SeatView, SectionAvailability } from "../seats/seats.model";
 import { PostgresHoldStore } from "./postgres-hold-store";
 import { RedisHoldStore } from "./redis-hold-store";
@@ -21,6 +22,13 @@ export interface HoldStore {
   activeHolds(eventId: number, userId: number): Promise<HeldSeat[]>;
   /** Releases the buyer's holds (all, or only `seatIds`), except seats in an order awaiting payment. */
   release(eventId: number, userId: number, seatIds: number[] | null): Promise<void>;
+  /**
+   * Inside the order transaction: locks the seats this buyer holds and keeps them held long enough
+   * for the payment. Returns those seats; fewer than requested means the order must be refused.
+   */
+  claimForOrder(eventId: number, userId: number, seatIds: number[], db: Queryable): Promise<{ id: number; priceCents: number }[]>;
+  /** Inside the sale transaction: marks the claimed seats sold. Returns how many were. */
+  sell(userId: number, seatIds: number[], db: Queryable): Promise<number>;
   availability(eventId: number): Promise<SectionAvailability[]>;
   seatMap(eventId: number, section: string): Promise<SeatView[]>;
 }

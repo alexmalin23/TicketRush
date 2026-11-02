@@ -1,6 +1,8 @@
 import request from "supertest";
 import { ModexApplication } from "../../src/core";
 import { DatabaseService } from "../../src/database/database.service";
+import { RedisService } from "../../src/database/redis.service";
+import { holdKeys } from "../../src/modules/holds/redis-hold-store";
 import { buildScenario, holdRequest, Scenario } from "../helpers/scenario";
 import { ProviderOverrides, startStack } from "../helpers/stack";
 import { bearer, http } from "../helpers/test-app";
@@ -23,6 +25,7 @@ describe("Orders (e2e)", () => {
     });
     afterAll(() => stop());
     beforeEach(async () => {
+      await app.get(RedisService).client.flushdb(); // the test keyspace (db 1) only; event ids repeat
       s = await buildScenario(app, 12, 20);
       await request(mockUrl).delete("/ledger");
     });
@@ -37,6 +40,7 @@ describe("Orders (e2e)", () => {
   const count = async (sql: string) => Number((await db.query<{ n: string }>(sql)).rows[0].n);
   const seatState = async (id: number) =>
     (await db.query<{ status: string; held_by: number | null }>("SELECT status, held_by FROM seats WHERE id = $1", [id])).rows[0];
+  const redisOwner = (seatId: number) => app.get(RedisService).client.get(holdKeys.seat(s.eventId, seatId));
   const payments = async () =>
     (await db.query<{ status: string }>("SELECT status FROM payments ORDER BY attempt")).rows.map((p) => p.status);
 
@@ -264,5 +268,74 @@ describe("Orders (e2e)", () => {
       expect(await payments()).toEqual(["unreachable"]); // not "declined": the card was never asked
       expect((await ledger()).totals.charges).toBe(0);
     });
+  });
+
+  describe("holds in Redis", () => {
+    useStack({}, { HOLD_STORE: "redis" });
+
+    it("buys seats held in Redis and removes the holds once they are sold", async () => {
+      await hold(0, [s.seatIds[0], s.seatIds[1]]).expect(201);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0], s.seatIds[1]] }).expect(201);
+
+      expect(res.body).toMatchObject({ status: "issued", totalCents: 90000 });
+      expect(await seatState(s.seatIds[0])).toEqual({ status: "sold", held_by: null });
+      expect(await redisOwner(s.seatIds[0])).toBeNull();
+      expect((await ledger()).totals.succeeded).toBe(1);
+    });
+
+    it("refuses seats held by someone else, before any charge", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      await hold(1, [s.seatIds[1]]).expect(201);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0], s.seatIds[1]] }).expect(409);
+
+      expect(res.body).toMatchObject({ code: "HOLD_INVALID", details: { seatIds: [s.seatIds[1]] } });
+      expect((await ledger()).totals.charges).toBe(0);
+    });
+
+    it("Redis says held, Postgres says sold: Postgres wins and nothing is charged", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      await db.query("UPDATE seats SET status = 'sold' WHERE id = $1", [s.seatIds[0]]);
+
+      const res = await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(409);
+
+      expect(res.body.code).toBe("HOLD_INVALID");
+      expect((await ledger()).totals.charges).toBe(0);
+    });
+  });
+
+  describe("holds in Redis, payment declined", () => {
+    useStack({ MOCK_PAYMENT_FAILURE_RATE: "1" }, { HOLD_STORE: "redis" });
+
+    it("releases the Redis hold at once", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+
+      await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(402);
+
+      expect(await redisOwner(s.seatIds[0])).toBeNull();
+      await hold(1, [s.seatIds[0]]).expect(201);
+    });
+  });
+
+  describe("holds in Redis, Redis loses its data mid-payment", () => {
+    // As "the provider answers too slowly": the first buyer's order stays pending_payment.
+    useStack(
+      { MOCK_PAYMENT_LATENCY_MS_MIN: "2000", MOCK_PAYMENT_LATENCY_MS_MAX: "2000" },
+      { PAYMENT_TIMEOUT_MS: "100", HOLD_STORE: "redis" }
+    );
+
+    it("the pending order in Postgres still keeps a second buyer from paying for the seat", async () => {
+      await hold(0, [s.seatIds[0]]).expect(201);
+      await order(0, "k1", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(202);
+
+      await app.get(RedisService).client.flushdb(); // what a restart without persistence leaves
+      await hold(1, [s.seatIds[0]]).expect(201); // Redis alone can no longer tell
+      const res = await order(1, "k2", { eventId: s.eventId, seatIds: [s.seatIds[0]] }).expect(409);
+
+      expect(res.body.code).toBe("ORDER_IN_PROGRESS");
+      await new Promise((resolve) => setTimeout(resolve, 2100)); // the provider finishes in the background
+      expect((await ledger()).totals.charges).toBe(1); // the first buyer's only: the second was never charged
+    }, 15_000);
   });
 });

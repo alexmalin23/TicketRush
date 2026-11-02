@@ -1,5 +1,6 @@
 import { ConflictException, Inject, Injectable } from "../../core";
 import { ENV, Env } from "../../config/env";
+import type { Queryable } from "../../database/database.constants";
 import { DatabaseService } from "../../database/database.service";
 import { HeldSeat, SeatsModel, SeatView, SectionAvailability } from "../seats/seats.model";
 import type { HoldStore } from "./hold-store";
@@ -50,6 +51,18 @@ export class PostgresHoldStore implements HoldStore {
 
   async release(eventId: number, userId: number, seatIds: number[] | null): Promise<void> {
     await this.seatsModel.releaseHoldsOf(eventId, userId, seatIds);
+  }
+
+  async claimForOrder(eventId: number, userId: number, seatIds: number[], db: Queryable) {
+    // FOR UPDATE: two orders for the same seats serialize here; the second one waits, then sees the first.
+    const held = await this.seatsModel.lockSeatsHeldByUser(eventId, userId, seatIds, db);
+    // Payment can take seconds; the hold must outlive it or the seats could be sold to someone else.
+    if (held.length === seatIds.length) await this.seatsModel.extendHolds(seatIds, this.env.HOLD_TTL_SECONDS, db);
+    return held;
+  }
+
+  sell(userId: number, seatIds: number[], db: Queryable): Promise<number> {
+    return this.seatsModel.sellHeldSeats(userId, seatIds, db);
   }
 
   availability(eventId: number): Promise<SectionAvailability[]> {
