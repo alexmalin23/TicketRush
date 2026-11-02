@@ -135,23 +135,23 @@ export class SeatsModel {
     return rows;
   }
 
-  /** The sold seats among `seatIds`. */
-  async soldAmong(eventId: number, seatIds: number[], db: Queryable = this.database): Promise<number[]> {
-    const { rows } = await db.query<{ id: number }>(
-      `SELECT id FROM seats WHERE event_id = $1 AND id = ANY($2::bigint[]) AND status = 'sold'`,
-      [eventId, seatIds]
+  /**
+   * What a Redis hold needs from Postgres, in one round trip: the requested seats that are not sold,
+   * and how many seats this buyer already bought in the event (paid or issued orders), the Postgres
+   * half of the per-user limit. Each separate query would wait for a pool connection on its own.
+   */
+  async unsoldForHold(eventId: number, userId: number, seatIds: number[]): Promise<{ seats: Omit<HeldSeat, "heldUntil">[]; bought: number }> {
+    const { rows } = await this.database.query<Omit<HeldSeat, "heldUntil"> & { bought: number }>(
+      `SELECT b.bought, s.id, s.section, s.row_label AS "row", s.number, s.price_cents AS "priceCents"
+         FROM (SELECT count(*)::int AS bought FROM order_items i JOIN orders o ON o.id = i.order_id
+                WHERE o.event_id = $1 AND o.user_id = $2 AND o.status IN ('paid', 'issued')) b
+         LEFT JOIN seats s ON s.event_id = $1 AND s.id = ANY($3::bigint[]) AND s.status <> 'sold'
+        ORDER BY s.id`,
+      [eventId, userId, seatIds]
     );
-    return rows.map((r) => Number(r.id));
-  }
-
-  /** Bought seats of this user in the event (paid or issued orders): the Postgres half of the per-user limit. */
-  async countBoughtSeats(eventId: number, userId: number, db: Queryable = this.database): Promise<number> {
-    const { rows } = await db.query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM order_items i JOIN orders o ON o.id = i.order_id
-        WHERE o.event_id = $1 AND o.user_id = $2 AND o.status IN ('paid', 'issued')`,
-      [eventId, userId]
-    );
-    return rows[0].count;
+    // The LEFT JOIN keeps one row for the count even when no seat matches.
+    const seats = rows.filter((row) => row.id !== null).map(({ bought: _bought, ...seat }) => seat);
+    return { seats, bought: rows[0].bought };
   }
 
   /** The seats among `seatIds` that belong to an order awaiting payment: they must not be released. */

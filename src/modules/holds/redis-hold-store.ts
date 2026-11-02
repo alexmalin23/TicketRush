@@ -123,15 +123,13 @@ export class RedisHoldStore implements HoldStore {
 
   async hold(eventId: number, userId: number, seatIds: number[], maxSeatsPerUser: number): Promise<HeldSeat[]> {
     const ids = [...new Set(seatIds)].sort((a, b) => a - b);
-    const seats = await this.seatsModel.findByIds(eventId, ids);
-    // Unknown ids and sold seats are unavailable, the same answer the Postgres store gives.
-    const sold = new Set(await this.seatsModel.soldAmong(eventId, ids));
-    const missing = ids.filter((id) => !seats.some((seat) => seat.id === id) || sold.has(id));
-    if (missing.length > 0) throw seatUnavailable(missing);
-
     // Read before the script, so a sale completing in between can be missed by the limit;
     // see the order flow for how holds are removed after a sale.
-    const bought = await this.seatsModel.countBoughtSeats(eventId, userId);
+    const { seats, bought } = await this.seatsModel.unsoldForHold(eventId, userId, ids);
+    // Unknown ids and sold seats are unavailable, the same answer the Postgres store gives.
+    const missing = ids.filter((id) => !seats.some((seat) => seat.id === id));
+    if (missing.length > 0) throw seatUnavailable(missing);
+
     const result = (await this.redis.client.eval(
       HOLD_SEATS,
       1 + 2 * seats.length,
