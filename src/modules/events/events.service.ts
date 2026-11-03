@@ -1,11 +1,18 @@
+import { ENV, Env } from "../../config/env";
 import { Inject, Injectable, NotFoundException } from "../../core";
+import { RedisService } from "../../database/redis.service";
 import { HOLD_STORE, HoldStore } from "../holds/hold-store";
 import { SeatsModel, SeatView, SectionAvailability, SectionPrice } from "../seats/seats.model";
 import { EventDetail, EventsModel, EventSummary } from "./events.model";
 
+/** Carries the event's hash tag, so resetting an event clears it with the event's other keys. */
+export const eventCacheKey = (id: number) => `event:{${id}}:details`;
+
 @Injectable()
 export class EventsService {
   constructor(
+    @Inject(ENV) private readonly env: Env,
+    private readonly redis: RedisService,
     private readonly eventsModel: EventsModel,
     private readonly seatsModel: SeatsModel,
     // Which seats are free depends on where holds live.
@@ -35,8 +42,30 @@ export class EventsService {
   }
 
   private async requireEvent(id: number): Promise<EventDetail> {
-    const event = await this.eventsModel.findById(id);
+    const event = await this.readEvent(id);
     if (!event) throw new NotFoundException(`Event ${id} not found`);
+    return event;
+  }
+
+  /**
+   * Cache-aside: Redis first, Postgres on a miss, then fill Redis. Only for browsing: whether a
+   * buyer may hold or order is still decided from Postgres. A cache that cannot answer is a miss,
+   * not an error, so a Redis outage slows browsing down instead of breaking it.
+   */
+  private async readEvent(id: number): Promise<EventDetail | null> {
+    if (!this.env.CACHE_ENABLED) return this.eventsModel.findById(id);
+
+    const key = eventCacheKey(id);
+    const cached = await this.redis.client.get(key).catch(() => null);
+    if (cached) {
+      const event = JSON.parse(cached) as EventDetail;
+      return { ...event, startsAt: new Date(event.startsAt), onsaleAt: new Date(event.onsaleAt) };
+    }
+
+    const event = await this.eventsModel.findById(id);
+    if (event) {
+      await this.redis.client.set(key, JSON.stringify(event), "EX", this.env.EVENT_CACHE_TTL_SECONDS).catch(() => undefined);
+    }
     return event;
   }
 }

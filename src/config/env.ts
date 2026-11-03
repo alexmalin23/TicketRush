@@ -51,6 +51,11 @@ const EnvSchema = z.object({
   /** An order pending this long has no request working on it anymore (3 charge attempts take ~9 s). */
   RECONCILE_AFTER_SECONDS: z.coerce.number().int().positive().default(30),
 
+  /** Serve read paths from Redis. false = every read goes to Postgres (benchmark baseline). */
+  CACHE_ENABLED: z.stringbool().default(false),
+  /** How long browsing can show an event's old details; hold and order checks always read Postgres. */
+  EVENT_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),
 }).refine((env) => env.READ_ROUTING === "primary" || env.DATABASE_REPLICA_URL, {
