@@ -55,6 +55,8 @@ const EnvSchema = z.object({
   CACHE_ENABLED: z.stringbool().default(false),
   /** How long browsing can show an event's old details; hold and order checks always read Postgres. */
   EVENT_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  /** How old a displayed seat or section count can be; holds always check the real state. */
+  AVAILABILITY_CACHE_TTL_MS: z.coerce.number().int().positive().default(1000),
 
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),

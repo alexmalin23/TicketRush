@@ -20,7 +20,7 @@ describe("Event cache (e2e)", () => {
     db = app.get(DatabaseService);
     redis = app.get(RedisService);
     await redis.client.flushdb();
-    s = await buildScenario(app, 3, 1);
+    s = await buildScenario(app, 3, 2);
   };
   const rename = (name: string) => db.query("UPDATE events SET name = $1 WHERE id = $2", [name, s.eventId]);
   const getEvent = () => http(app).get(`${API}/events/${s.eventId}`).expect(200);
@@ -89,5 +89,73 @@ describe("Event cache (e2e)", () => {
     await start({ CACHE_ENABLED: "false" });
     await getEvent();
     expect(await redis.client.exists(eventCacheKey(s.eventId))).toBe(0);
+  });
+
+  describe.each(["postgres", "redis"])("availability and seat map, holds in %s", (store) => {
+    const availability = () => http(app).get(`${API}/events/${s.eventId}/availability`).expect(200);
+    const seatMap = () => http(app).get(`${API}/events/${s.eventId}/seats?section=A`).expect(200);
+    const statuses = (res: { body: { seats: { status: string }[] } }) => res.body.seats.map((seat) => seat.status);
+    const startCached = (ttlMs: number) => start({ HOLD_STORE: store, AVAILABILITY_CACHE_TTL_MS: String(ttlMs) });
+    const expire = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+    it("answers exactly like the hold store, on a miss and on a hit", async () => {
+      await startCached(60_000);
+      await holdRequest(app, s.eventId)(s.tokens[0], [s.seatIds[1]]).expect(201);
+
+      const first = [await availability(), await seatMap()];
+      const second = [await availability(), await seatMap()];
+
+      expect(second[0].body).toEqual(first[0].body);
+      expect(second[1].body).toEqual(first[1].body);
+      expect(first[0].body.sections).toEqual([{ name: "A", available: 2, total: 3 }]);
+      expect(statuses(first[1])).toEqual(["available", "unavailable", "available"]);
+    });
+
+    it("a buyer who sees a taken seat as free is still refused by the hold", async () => {
+      await startCached(60_000);
+      const hold = holdRequest(app, s.eventId);
+      await seatMap(); // cached with every seat free
+      await hold(s.tokens[0], [s.seatIds[0]]).expect(201);
+
+      expect(statuses(await seatMap())[0]).toBe("available");
+      expect((await hold(s.tokens[1], [s.seatIds[0]]).expect(409)).body.code).toBe("SEAT_UNAVAILABLE");
+    });
+
+    it("shows the real state once the entry expires", async () => {
+      await startCached(50);
+      await seatMap();
+      await availability();
+      await holdRequest(app, s.eventId)(s.tokens[0], [s.seatIds[0]]).expect(201);
+
+      await expire();
+
+      expect(statuses(await seatMap())[0]).toBe("unavailable");
+      expect((await availability()).body.sections[0].available).toBe(2);
+    });
+
+    it("does not store a section that does not exist", async () => {
+      await startCached(60_000);
+      await http(app).get(`${API}/events/${s.eventId}/seats?section=Z`).expect(404);
+      expect(await redis.client.keys("*:Z")).toEqual([]);
+    });
+
+    it("every key expires, and resetting the event clears them", async () => {
+      await startCached(60_000);
+      await availability();
+      await seatMap();
+      const keys = (await redis.client.keys(`*:{${s.eventId}}:*`)).filter((key) => /availability|section-(layout|free)/.test(key));
+      expect(keys).toHaveLength(3);
+      for (const key of keys) expect(await redis.client.pttl(key)).toBeGreaterThan(0);
+
+      await http(app).post(`${API}/dev/events/${s.eventId}/reset`).expect(200);
+      expect(await redis.client.exists(...keys)).toBe(0);
+    });
+  });
+
+  it("availability and seat map keep answering from Postgres when Redis is down", async () => {
+    await start();
+    redis.client.disconnect();
+    expect((await http(app).get(`${API}/events/${s.eventId}/availability`).expect(200)).body.sections[0].total).toBe(3);
+    expect((await http(app).get(`${API}/events/${s.eventId}/seats?section=A`).expect(200)).body.seats).toHaveLength(3);
   });
 });

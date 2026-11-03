@@ -4,6 +4,7 @@ import { RedisService } from "../../database/redis.service";
 import { HOLD_STORE, HoldStore } from "../holds/hold-store";
 import { SeatsModel, SeatView, SectionAvailability, SectionPrice } from "../seats/seats.model";
 import { EventDetail, EventsModel, EventSummary } from "./events.model";
+import { SeatCache } from "./seat-cache";
 
 /** Carries the event's hash tag, so resetting an event clears it with the event's other keys. */
 export const eventCacheKey = (id: number) => `event:{${id}}:details`;
@@ -13,6 +14,7 @@ export class EventsService {
   constructor(
     @Inject(ENV) private readonly env: Env,
     private readonly redis: RedisService,
+    private readonly seatCache: SeatCache,
     private readonly eventsModel: EventsModel,
     private readonly seatsModel: SeatsModel,
     // Which seats are free depends on where holds live.
@@ -31,12 +33,12 @@ export class EventsService {
   /** The cheap summary: counts only, so clients can poll it without loading every seat. */
   async availability(id: number): Promise<{ sections: SectionAvailability[] }> {
     await this.requireEvent(id);
-    return { sections: await this.holds.availability(id) };
+    return { sections: await this.seatCache.availability(id, () => this.holds.availability(id)) };
   }
 
   async seatMap(id: number, section: string): Promise<{ section: string; seats: SeatView[] }> {
     await this.requireEvent(id);
-    const seats = await this.holds.seatMap(id, section);
+    const seats = await this.seatCache.seatMap(id, section, () => this.holds.seatMap(id, section));
     if (seats.length === 0) throw new NotFoundException(`Section ${section} not found`);
     return { section, seats };
   }
