@@ -17,6 +17,10 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+  /** A streaming replica of DATABASE_URL. Empty = none. */
+  DATABASE_REPLICA_URL: z.string().optional().transform((url) => url || undefined),
+  /** Where reads that tolerate replication lag go: "primary" (benchmark baseline) or "replica". */
+  READ_ROUTING: z.enum(["primary", "replica"]).default("primary"),
 
   REDIS_URL: z.string().min(1, "REDIS_URL is required"),
 
@@ -49,6 +53,9 @@ const EnvSchema = z.object({
 
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),
+}).refine((env) => env.READ_ROUTING === "primary" || env.DATABASE_REPLICA_URL, {
+  path: ["DATABASE_REPLICA_URL"],
+  message: "required when READ_ROUTING=replica",
 });
 
 export type Env = z.infer<typeof EnvSchema>;

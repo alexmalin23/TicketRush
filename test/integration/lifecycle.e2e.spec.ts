@@ -70,6 +70,32 @@ describe("Database & lifecycle (e2e)", () => {
     await expect(ExpressFactory.create(appDefinition)).rejects.toThrow();
   });
 
+  it("reads stay on the primary unless READ_ROUTING=replica", async () => {
+    const app = await createTestApp();
+    const db = app.get(DatabaseService);
+    expect(db.reader).toBe(db);
+    await app.close();
+  });
+
+  it("READ_ROUTING=replica reads through a second pool, checked at startup and closed on shutdown", async () => {
+    // CI runs no replica: a second pool to the same database stands in for one.
+    process.env.READ_ROUTING = "replica";
+    process.env.DATABASE_REPLICA_URL = process.env.DATABASE_URL;
+    const app = await createTestApp();
+    const db = app.get(DatabaseService);
+    expect(db.reader).not.toBe(db);
+    await expect(db.reader.query("SELECT 1 AS one")).resolves.toMatchObject({ rows: [{ one: 1 }] });
+    await app.close();
+    await expect(db.reader.query("SELECT 1")).rejects.toThrow();
+  });
+
+  it("fails fast at startup when the replica is unreachable", async () => {
+    process.env.READ_ROUTING = "replica";
+    process.env.DATABASE_REPLICA_URL = "postgres://postgres:postgres@127.0.0.1:1/modex";
+    process.env.DB_CONNECTION_TIMEOUT_MS = "1000";
+    await expect(ExpressFactory.create(appDefinition)).rejects.toThrow();
+  });
+
   it("fails fast at startup when Redis is unreachable", async () => {
     process.env.REDIS_URL = "redis://127.0.0.1:1";
     await expect(ExpressFactory.create(appDefinition)).rejects.toThrow("Redis is unreachable at startup");

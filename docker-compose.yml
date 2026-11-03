@@ -4,8 +4,12 @@
 #   → also runs migrations, the API replicas and the load balancer (host port 3080).
 #   `npm run load` does this on its own. API_REPLICAS=1 reproduces the single-instance baseline;
 #   LB_METHOD=round-robin switches the balancing method (default least-conn).
+# Read replica: add `--profile replica` and set READ_ROUTING=replica.
 x-app-env: &app-env
   DATABASE_URL: postgres://postgres:postgres@postgres:5432/modex
+  # Used only with READ_ROUTING=replica, which needs the replica profile running.
+  DATABASE_REPLICA_URL: postgres://postgres:postgres@postgres-replica:5432/modex
+  READ_ROUTING: ${READ_ROUTING:-primary}
   # Per replica: replicas x DB_POOL_MAX must stay under Postgres max_connections (100).
   DB_POOL_MAX: ${DB_POOL_MAX:-10}
   REDIS_URL: redis://redis:6379
@@ -24,6 +28,8 @@ x-app-env: &app-env
 services:
   postgres:
     image: postgres:16
+    # pg_hba.conf of the image plus replication from the Compose network.
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -34,6 +40,27 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Runs once, on the first start: creates the separate test database
       - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+      - ./docker/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Read-only streaming replica of postgres. The first start copies the primary (pg_basebackup);
+  # -R makes the copy a standby that keeps applying the primary's WAL. Later starts reuse the copy.
+  postgres-replica:
+    profiles: [replica]
+    image: postgres:16
+    environment:
+      PGPASSWORD: postgres
+    entrypoint:
+      - bash
+      - -c
+      - '[ -s "$$PGDATA/PG_VERSION" ] || pg_basebackup -h postgres -U postgres -D "$$PGDATA" -R -X stream || exit 1; exec docker-entrypoint.sh postgres'
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s

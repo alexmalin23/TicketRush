@@ -53,4 +53,13 @@ describe("loadEnv", () => {
     expect(env.LOG_LEVEL).toBe("info");
     expect(env.ENABLE_DEV_ROUTES).toBe(false);
   });
+
+  it("refuses READ_ROUTING=replica without a replica URL (an empty one counts as none)", () => {
+    const base = { DATABASE_URL: "postgres://localhost/db", REDIS_URL: "redis://localhost:6379", JWT_SECRET: "x".repeat(20) };
+    expect(loadEnv(base).READ_ROUTING).toBe("primary");
+    expect(() => loadEnv({ ...base, READ_ROUTING: "replica", DATABASE_REPLICA_URL: "" })).toThrow(/DATABASE_REPLICA_URL/);
+    expect(loadEnv({ ...base, READ_ROUTING: "replica", DATABASE_REPLICA_URL: "postgres://replica/db" }).DATABASE_REPLICA_URL).toBe(
+      "postgres://replica/db"
+    );
+  });
 });

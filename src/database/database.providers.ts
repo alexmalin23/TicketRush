@@ -1,7 +1,7 @@
 import { Pool, types } from "pg";
 import { FactoryProvider, Logger } from "../core";
 import { ENV, Env } from "../config/env";
-import { PG_POOL } from "./database.constants";
+import { PG_POOL, PG_REPLICA_POOL } from "./database.constants";
 
 // pg returns NUMERIC columns as strings to avoid losing precision.
 // Prices here are small, so we parse them to JS numbers globally.
@@ -19,9 +19,9 @@ types.setTypeParser(types.builtins.INT8, (value: string) => {
  * ONE pool for the whole app, created at startup and shared by every Model.
  * Never create a Pool per request: each Pool opens its own connections.
  */
-function createPool(env: Env, logger: Logger): Pool {
+function createPool(env: Env, logger: Logger, connectionString = env.DATABASE_URL): Pool {
   const pool = new Pool({
-    connectionString: env.DATABASE_URL,
+    connectionString,
     max: env.DB_POOL_MAX, // maximum open connections
     connectionTimeoutMillis: env.DB_CONNECTION_TIMEOUT_MS, // pool exhausted -> error after this
     idleTimeoutMillis: 30_000, // close connections idle for 30s
@@ -41,5 +41,13 @@ function createPool(env: Env, logger: Logger): Pool {
 export const poolProvider: FactoryProvider = {
   provide: PG_POOL,
   useFactory: (env: Env, logger: Logger) => createPool(env, logger.child("Database")),
+  inject: [ENV, Logger],
+};
+
+/** A second pool, to the replica, only when READ_ROUTING=replica. Same size and timeouts as the primary's. */
+export const replicaPoolProvider: FactoryProvider = {
+  provide: PG_REPLICA_POOL,
+  useFactory: (env: Env, logger: Logger) =>
+    env.READ_ROUTING === "replica" ? createPool(env, logger.child("Replica"), env.DATABASE_REPLICA_URL) : null,
   inject: [ENV, Logger],
 };

@@ -1,11 +1,12 @@
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 import { Inject, Injectable, Logger, OnInit, OnShutdown } from "../core";
-import { PG_POOL, Queryable } from "./database.constants";
+import { PG_POOL, PG_REPLICA_POOL, Queryable } from "./database.constants";
 
 /**
  * The one entry point to PostgreSQL.
  * - query(): runs on any free connection from the shared pool
  * - transaction(): runs several queries on ONE connection, all-or-nothing
+ * - reader: where reads that tolerate replication lag go
  * - onInit(): checks the connection at startup (fail fast)
  * - onShutdown(): closes the pool on graceful shutdown
  */
@@ -15,9 +16,18 @@ export class DatabaseService implements Queryable, OnInit, OnShutdown {
 
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(PG_REPLICA_POOL) private readonly replicaPool: Pool | null,
     logger: Logger
   ) {
     this.logger = logger.child("Database");
+  }
+
+  /**
+   * The replica with READ_ROUTING=replica, otherwise the primary. A replica can be behind the
+   * primary: never use it to read what this request, or this user a moment ago, just wrote.
+   */
+  get reader(): Queryable {
+    return this.replicaPool ?? this;
   }
 
   query<R extends QueryResultRow = QueryResultRow>(
@@ -54,10 +64,15 @@ export class DatabaseService implements Queryable, OnInit, OnShutdown {
   async onInit(): Promise<void> {
     await this.pool.query("SELECT 1");
     this.logger.info("Connected to PostgreSQL");
+    if (this.replicaPool) {
+      await this.replicaPool.query("SELECT 1");
+      this.logger.info("Connected to the PostgreSQL replica");
+    }
   }
 
   async onShutdown(): Promise<void> {
     await this.pool.end();
+    await this.replicaPool?.end();
     this.logger.info("Connection pool closed");
   }
 }

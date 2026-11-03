@@ -1,6 +1,6 @@
 import { defineApp } from "./core";
 import { envProvider } from "./config/env";
-import { poolProvider } from "./database/database.providers";
+import { poolProvider, replicaPoolProvider } from "./database/database.providers";
 import { redisProvider } from "./database/redis.providers";
 import { AuthController } from "./modules/auth/auth.controller";
 import { DevController } from "./modules/dev/dev.controller";
@@ -21,5 +21,5 @@ import { UsersController } from "./modules/users/users.controller";
  */
 export const appDefinition = defineApp({
   controllers: [HealthController, UsersController, AuthController, EventsController, HoldsController, OrdersController, DevController],
-  providers: [envProvider, poolProvider, redisProvider, holdStoreProvider],
+  providers: [envProvider, poolProvider, replicaPoolProvider, redisProvider, holdStoreProvider],
 });
