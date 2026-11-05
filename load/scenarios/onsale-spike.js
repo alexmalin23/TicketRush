@@ -4,6 +4,9 @@
 //
 // Buyers go through the waiting room first when it is on (WAITING_ROOM_ENABLED=true on the stack, and
 // --env WAITING_ROOM=true here). They poll for the order's outcome, as ORDER_PROCESSING=async answers 202.
+// Browsers have no login in this scenario, so the room is modelled for them: each arrives at its place in a
+// line of ARRIVALS_PER_SECOND and leaves after STAY_SECONDS. Buyers (10%) use the real endpoints; set the
+// stack's WAITING_ROOM_ADMIT_PER_SECOND to a tenth of ARRIVALS_PER_SECOND.
 //
 //   npm run load -- onsale-spike --env VUS=500 --env HOLD_SECONDS=20
 import { check, sleep } from "k6";
@@ -16,6 +19,8 @@ import { report, routeThresholds, SUMMARY_TREND_STATS } from "../lib/report.js";
 const VUS = Number(__ENV.VUS || 500);
 const HOLD_SECONDS = Number(__ENV.HOLD_SECONDS || 30);
 const WAITING_ROOM = __ENV.WAITING_ROOM === "true";
+const ARRIVALS_PER_SECOND = Number(__ENV.ARRIVALS_PER_SECOND || 50);
+const STAY_SECONDS = 30;
 const BUYER_EVERY = 10; // every 10th VU buys: exactly 10%
 const BUYERS = Math.floor(VUS / BUYER_EVERY);
 const MAX_PURCHASES_PER_BUYER = 3; // the limit is 6 seats per event; this keeps the run about the spike, not the limit
@@ -120,8 +125,12 @@ export default function ({ tokens }) {
 
   if (buyerIndex >= 0 && buyerIndex < tokens.length && purchases < MAX_PURCHASES_PER_BUYER) {
     buy(tokens[buyerIndex], section);
-  } else {
+  } else if (!WAITING_ROOM) {
     browse(section);
+  } else {
+    const elapsed = exec.instance.currentTestRunDuration / 1000;
+    const turn = vu / ARRIVALS_PER_SECOND;
+    if (elapsed >= turn && elapsed < turn + STAY_SECONDS) browse(section);
   }
   sleep(1 + Math.random() * 2); // a person reads the screen before the next click
 }
