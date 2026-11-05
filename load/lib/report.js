@@ -48,6 +48,13 @@ function counterLines(data) {
     .map(([name, metric]) => `- **${name}:** ${metric.values.count}`);
 }
 
+/** Scenario-specific waits, such as how long a buyer stood in line. */
+function waitLines(data) {
+  return Object.entries(data.metrics)
+    .filter(([name, metric]) => metric.type === "trend" && name.endsWith("_ms"))
+    .map(([name, metric]) => `- **${name}:** p50 ${ms(metric.values["p(50)"])}, p95 ${ms(metric.values["p(95)"])}, max ${ms(metric.values.max)}`);
+}
+
 function markdown(scenario, routes, data) {
   const env = (key) => __ENV[key] || "unknown";
   const seconds = data.state.testRunDurationMs / 1000;
@@ -62,6 +69,7 @@ function markdown(scenario, routes, data) {
     `- **Duration:** ${seconds.toFixed(1)} s${vusMax ? `, max ${vusMax} VUs` : ""}`,
     `- **Checks:** ${checks ? `${checks.passes}/${checks.passes + checks.fails} passed` : "none"}`,
     ...counterLines(data),
+    ...waitLines(data),
     "",
     "## Machine",
     "",

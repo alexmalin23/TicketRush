@@ -2,19 +2,24 @@
 // (availability and the seat map), 10% buy: pick a seat from the map, hold it, order it, open the ticket.
 // Correctness is the point: the run ends with the invariants (zero violations), then the numbers.
 //
+// Buyers go through the waiting room first when it is on (WAITING_ROOM_ENABLED=true on the stack, and
+// --env WAITING_ROOM=true here). They poll for the order's outcome, as ORDER_PROCESSING=async answers 202.
+//
 //   npm run load -- onsale-spike --env VUS=500 --env HOLD_SECONDS=20
 import { check, sleep } from "k6";
 import exec from "k6/execution";
 import http from "k6/http";
-import { Counter } from "k6/metrics";
+import { Counter, Trend } from "k6/metrics";
 import { EVENT_ID, loginMany, request, resetEvent } from "../lib/api.js";
 import { report, routeThresholds, SUMMARY_TREND_STATS } from "../lib/report.js";
 
 const VUS = Number(__ENV.VUS || 500);
 const HOLD_SECONDS = Number(__ENV.HOLD_SECONDS || 30);
+const WAITING_ROOM = __ENV.WAITING_ROOM === "true";
 const BUYER_EVERY = 10; // every 10th VU buys: exactly 10%
 const BUYERS = Math.floor(VUS / BUYER_EVERY);
 const MAX_PURCHASES_PER_BUYER = 3; // the limit is 6 seats per event; this keeps the run about the spike, not the limit
+const ORDER_POLLS = 30;
 const SECTIONS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
 const ROUTES = [
@@ -22,6 +27,9 @@ const ROUTES = [
   "GET /api/v1/events/:id/seats",
   "POST /api/v1/events/:id/holds",
   "POST /api/v1/orders",
+  "GET /api/v1/orders/:id",
+  "POST /api/v1/events/:id/queue",
+  "GET /api/v1/events/:id/queue",
   "GET /api/v1/orders/:id/tickets",
 ];
 
@@ -32,7 +40,10 @@ const holdsSucceeded = new Counter("holds_succeeded");
 const holdsLostRace = new Counter("holds_lost_race");
 const ordersIssued = new Counter("orders_issued");
 const ordersDeclined = new Counter("orders_declined");
-const ordersPending = new Counter("orders_pending");
+const ordersPending = new Counter("orders_pending"); // no outcome yet when the buyer stopped polling
+const ordersUndecidedWait = new Trend("order_decision_ms", true); // order placed to order decided
+const admissionWait = new Trend("admission_wait_ms", true);
+const neverAdmitted = new Counter("buyers_never_admitted");
 const unexpected = new Counter("unexpected_answers"); // anything outside the documented answers
 const invariantViolations = new Counter("invariant_violations");
 const serverOrdersIssued = new Counter("server_orders_issued");
@@ -70,6 +81,37 @@ export function setup() {
 }
 
 let purchases = 0; // per VU: every VU has its own copy
+let accessToken = null;
+let expiresAt = 0;
+
+/** Joins the line and polls until admitted. False when the run ends first: the buyer just goes home. */
+function admitted(token) {
+  if (accessToken && Date.now() < expiresAt - 5000) return true;
+  const started = Date.now();
+  const joined = request("POST", `/api/v1/events/${EVENT_ID}/queue`, { token, name: "POST /api/v1/events/:id/queue" });
+  if (joined.status !== 200) {
+    unexpected.add(1);
+    return false;
+  }
+  for (;;) {
+    const res = request("GET", `/api/v1/events/${EVENT_ID}/queue`, { token, name: "GET /api/v1/events/:id/queue" });
+    if (res.status === 200 && res.json("admitted")) {
+      accessToken = res.json("accessToken");
+      expiresAt = new Date(res.json("expiresAt")).getTime();
+      admissionWait.add(Date.now() - started);
+      return true;
+    }
+    if (res.status !== 200) {
+      unexpected.add(1);
+      return false;
+    }
+    if (exec.scenario.progress >= 0.98) {
+      neverAdmitted.add(1);
+      return false;
+    }
+    sleep(1 + Math.random());
+  }
+}
 
 export default function ({ tokens }) {
   const vu = exec.vu.idInTest;
@@ -94,6 +136,7 @@ function browse(section) {
 }
 
 function buy(token, section) {
+  if (WAITING_ROOM && !admitted(token)) return;
   const map = request("GET", `/api/v1/events/${EVENT_ID}/seats?section=${section}`, { name: "GET /api/v1/events/:id/seats" });
   if (!check(map, { "seat map: 200": (r) => r.status === 200 })) return;
   const free = map.json("seats").filter((seat) => seat.status === "available");
@@ -102,7 +145,10 @@ function buy(token, section) {
   for (let attempt = 0; attempt < 3 && free.length > 0; attempt++) {
     const seatId = free.splice(Math.floor(Math.random() * free.length), 1)[0].id;
     const hold = request("POST", `/api/v1/events/${EVENT_ID}/holds`, {
-      token, body: { seatIds: [seatId] }, name: "POST /api/v1/events/:id/holds",
+      token,
+      body: { seatIds: [seatId] },
+      name: "POST /api/v1/events/:id/holds",
+      headers: accessToken ? { "X-Access-Token": accessToken } : undefined,
     });
     if (hold.status === 409 && hold.json("code") === "SEAT_UNAVAILABLE") {
       holdsLostRace.add(1);
@@ -125,14 +171,35 @@ function order(token, seatId) {
     token, body: { eventId: EVENT_ID, seatIds: [seatId] }, name: "POST /api/v1/orders", headers: { "Idempotency-Key": key },
   });
 
-  if (res.status === 201) {
-    ordersIssued.add(1);
-    check(request("GET", `/api/v1/orders/${res.json("id")}/tickets`, { token, name: "GET /api/v1/orders/:id/tickets" }), {
-      "tickets: one per seat": (r) => r.status === 200 && r.json().length === 1,
-    });
-  } else if (res.status === 402) ordersDeclined.add(1);
-  else if (res.status === 202) ordersPending.add(1);
+  if (res.status === 201) finishIssued(token, res.json("id"));
+  else if (res.status === 402) ordersDeclined.add(1);
+  else if (res.status === 202) pollOrder(token, res.json("id"));
   else unexpected.add(1);
+}
+
+function finishIssued(token, orderId) {
+  ordersIssued.add(1);
+  check(request("GET", `/api/v1/orders/${orderId}/tickets`, { token, name: "GET /api/v1/orders/:id/tickets" }), {
+    "tickets: one per seat": (r) => r.status === 200 && r.json().length === 1,
+  });
+}
+
+function pollOrder(token, orderId) {
+  const started = Date.now();
+  for (let i = 0; i < ORDER_POLLS; i++) {
+    sleep(1);
+    const res = request("GET", `/api/v1/orders/${orderId}`, { token, name: "GET /api/v1/orders/:id" });
+    const status = res.status === 200 ? res.json("status") : null;
+    if (status === "issued") {
+      ordersUndecidedWait.add(Date.now() - started);
+      return finishIssued(token, orderId);
+    }
+    if (status === "failed") {
+      ordersUndecidedWait.add(Date.now() - started);
+      return ordersDeclined.add(1);
+    }
+  }
+  ordersPending.add(1);
 }
 
 const RECONCILE_WAIT_SECONDS = Number(__ENV.RECONCILE_WAIT_SECONDS || 90);
@@ -142,7 +209,8 @@ export function teardown() {
   let res;
   for (let waited = 0; ; waited += 5) {
     res = request("GET", `/api/v1/dev/events/${EVENT_ID}/invariants`, { name: "GET /api/v1/dev/events/:id/invariants", phase: "check" });
-    if (res.status !== 200 || res.json("awaitingReconciliation") === 0 || waited >= RECONCILE_WAIT_SECONDS) break;
+    const settled = res.status === 200 && res.json("awaitingReconciliation") === 0 && res.json("totals.ordersPending") === 0;
+    if (res.status !== 200 || settled || waited >= RECONCILE_WAIT_SECONDS) break;
     sleep(5);
   }
   const ok = check(res, { "invariants: endpoint answered": (r) => r.status === 200 });

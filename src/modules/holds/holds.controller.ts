@@ -3,6 +3,7 @@ import { Controller, Delete, Get, HttpCode, Post, UseGuards, Validate } from "..
 import { API_PREFIX } from "../../common/api";
 import { AuthGuard } from "../../common/guards/auth.guard";
 import { IdParams, IdParamsSchema } from "../../common/validators/common.schemas";
+import { AccessTokenGuard } from "../waiting-room/access-token.guard";
 import { CreateHoldInput, CreateHoldSchema, ReleaseHoldsInput, ReleaseHoldsSchema } from "./holds.schemas";
 import { HoldRateLimitGuard } from "./hold-rate-limit.guard";
 import { HoldsService } from "./holds.service";
@@ -13,7 +14,7 @@ export class HoldsController {
   constructor(private readonly holdsService: HoldsService) {}
 
   @Post("/:id/holds")
-  @UseGuards(HoldRateLimitGuard) // after AuthGuard (class guards run first): needs req.user
+  @UseGuards(AccessTokenGuard, HoldRateLimitGuard) // after AuthGuard (class guards run first): need req.user
   @Validate({ params: IdParamsSchema, body: CreateHoldSchema })
   create(req: Request<IdParams, unknown, CreateHoldInput>) {
     return this.holdsService.hold(req.params.id, req.user!.id, req.body.seatIds);

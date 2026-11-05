@@ -58,6 +58,10 @@
     {
       "key": "idempotencyKey",
       "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
     }
   ],
   "item": [
@@ -384,6 +388,11 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Access-Token",
+                "value": "{{accessToken}}",
+                "description": "Only with WAITING_ROOM_ENABLED=true; otherwise ignored. Missing or invalid: 403 ACCESS_TOKEN_REQUIRED."
               }
             ],
             "url": {
@@ -494,6 +503,85 @@
       ]
     },
     {
+      "name": "Waiting room",
+      "item": [
+        {
+          "name": "Join the line",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "queue"
+              ]
+            },
+            "description": "200 `{ position, estimatedWaitSeconds }`. Safe to repeat: a buyer keeps their place. `position: 0` means already admitted."
+          }
+        },
+        {
+          "name": "Status in line",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.accessToken) pm.collectionVariables.set('accessToken', body.accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/events/{{eventId}}/queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events",
+                "{{eventId}}",
+                "queue"
+              ]
+            },
+            "description": "200 `{ admitted: false, position, estimatedWaitSeconds }` or `{ admitted: true, accessToken, expiresAt }`; saves the token. 404 `NOT_IN_QUEUE` if the buyer never joined."
+          }
+        }
+      ]
+    },
+    {
       "name": "Orders",
       "item": [
         {
@@ -521,7 +609,7 @@
                 "orders"
               ]
             },
-            "description": "Requires login and the `Idempotency-Key` header (generated per send by the pre-request script; re-send the SAME key to replay). Body `{ eventId, seatIds }`: every seat must be held by you and not expired. 201 issued order (seats sold, tickets issued) `{ id, eventId, status, totalCents, items, createdAt }`; 402 `PAYMENT_DECLINED` (order failed, seats released); 202 payment outcome not known yet (order `pending_payment`, poll Get order); 409 `HOLD_INVALID` (`details.seatIds`), 409 `ORDER_IN_PROGRESS`, 409 `IDEMPOTENCY_IN_PROGRESS`, 422 `IDEMPOTENCY_KEY_REUSED`, 503 `PAYMENT_PROVIDER_UNAVAILABLE`, 400 missing key.",
+            "description": "ORDER_PROCESSING=async (the Compose stack): 202 with the order in `pending_payment`; poll Get order. ORDER_PROCESSING=sync (benchmark baseline): 201 issued, 402 declined, or 202 when the provider did not answer. Requires an `Idempotency-Key` header.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"eventId\": {{eventId}},\n  \"seatIds\": [{{seatId}}]\n}",

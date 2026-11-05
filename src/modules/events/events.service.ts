@@ -25,9 +25,9 @@ export class EventsService {
     return this.eventsModel.findAll();
   }
 
-  async findOne(id: number): Promise<EventDetail & { sections: SectionPrice[] }> {
+  async findOne(id: number): Promise<EventDetail & { sections: SectionPrice[]; waitingRoomEnabled: boolean }> {
     const event = await this.requireEvent(id);
-    return { ...event, sections: await this.seatsModel.sectionPrices(id) };
+    return { ...event, waitingRoomEnabled: this.env.WAITING_ROOM_ENABLED, sections: await this.seatsModel.sectionPrices(id) };
   }
 
   /** The cheap summary: counts only, so clients can poll it without loading every seat. */
