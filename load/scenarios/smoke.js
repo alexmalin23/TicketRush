@@ -1,6 +1,6 @@
 // smoke: one buyer walks the whole flow once. Proves the system works end to end
 // before any load scenario is worth running. Grows with every new endpoint.
-import { check } from "k6";
+import { check, sleep } from "k6";
 import { EVENT_ID, request, login, resetEvent, testUser } from "../lib/api.js";
 import { report, routeThresholds, SUMMARY_TREND_STATS } from "../lib/report.js";
 
@@ -101,11 +101,24 @@ export default function () {
   const orderKey = `smoke-${Date.now()}`;
   const placeOrder = () =>
     request("POST", "/api/v1/orders", { token, body: orderBody, name: "POST /api/v1/orders", headers: { "Idempotency-Key": orderKey } });
+  // The worker decides an async order; a buyer's client polls, and so does this.
+  const awaitOrder = (id) => {
+    for (let i = 0; i < 30; i++) {
+      const status = request("GET", `/api/v1/orders/${id}`, { token, name: "GET /api/v1/orders/:id" }).json("status");
+      if (status !== "pending_payment") return status;
+      sleep(1);
+    }
+    return "pending_payment";
+  };
   const bought = placeOrder();
-  check(bought, { "order: 201 issued, or 402 when the mock declines": (r) => (r.status === 201 && r.json("status") === "issued") || r.status === 402 });
+  check(bought, {
+    "order: 202 pending, or with ORDER_PROCESSING=sync 201 issued or 402 declined": (r) => r.status === 202 || (r.status === 201 && r.json("status") === "issued") || r.status === 402,
+  });
+  const outcome = bought.status === 202 ? awaitOrder(bought.json("id")) : bought.status === 201 ? "issued" : "failed";
+  const replays = (r) => r.status === bought.status && (bought.status === 402 || r.json("id") === bought.json("id"));
 
-  if (bought.status === 201) {
-    check(placeOrder(), { "order: a repeated key replays the same order": (r) => r.status === 201 && r.json("id") === bought.json("id") });
+  if (outcome === "issued") {
+    check(placeOrder(), { "order: a repeated key replays the same order": replays });
     check(request("GET", `/api/v1/orders/${bought.json("id")}`, { token, name: "GET /api/v1/orders/:id" }), { "order: readable": (r) => r.status === 200 });
     check(request("GET", `/api/v1/orders/${bought.json("id")}/tickets`, { token, name: "GET /api/v1/orders/:id/tickets" }), {
       "tickets: one per seat, with a code": (r) => r.json().length === 1 && r.json("0.code").length >= 16,
@@ -113,7 +126,7 @@ export default function () {
     check(availability(), { "sold: the seat is no longer available": (r) => freeSeats(r) === 9999 });
   } else {
     // Declined (about 1 in 10 with the default mock): the order failed and the seat is free again at once.
-    check(placeOrder(), { "declined: a repeated key replays the same 402": (r) => r.status === 402 });
+    check(placeOrder(), { "declined: a repeated key replays the same answer": replays });
     check(request("GET", `/api/v1/events/${EVENT_ID}/holds/me`, { token, name: "GET /api/v1/events/:id/holds/me" }), {
       "declined: nothing is held any more": (r) => r.json("seats").length === 0,
     });
