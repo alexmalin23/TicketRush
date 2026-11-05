@@ -52,11 +52,13 @@ const EnvSchema = z.object({
   RECONCILE_AFTER_SECONDS: z.coerce.number().int().positive().default(30),
 
   /** Serve read paths from Redis. false = every read goes to Postgres (benchmark baseline). */
-  CACHE_ENABLED: z.stringbool().default(false),
+  CACHE_ENABLED: z.stringbool().default(true),
   /** How long browsing can show an event's old details; hold and order checks always read Postgres. */
   EVENT_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   /** How old a displayed seat or section count can be; holds always check the real state. */
   AVAILABILITY_CACHE_TTL_MS: z.coerce.number().int().positive().default(1000),
+  /** How long past that an old answer is still served while one request refreshes it. */
+  AVAILABILITY_STALE_MS: z.coerce.number().int().nonnegative().default(1000),
 
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),

@@ -2,6 +2,7 @@ import { ModexApplication } from "../../src/core";
 import { DatabaseService } from "../../src/database/database.service";
 import { RedisService } from "../../src/database/redis.service";
 import { eventCacheKey } from "../../src/modules/events/events.service";
+import { SeatCache, seatCacheKeys } from "../../src/modules/events/seat-cache";
 import { buildScenario, holdRequest, Scenario } from "../helpers/scenario";
 import { createTestApp, http } from "../helpers/test-app";
 
@@ -95,7 +96,8 @@ describe("Event cache (e2e)", () => {
     const availability = () => http(app).get(`${API}/events/${s.eventId}/availability`).expect(200);
     const seatMap = () => http(app).get(`${API}/events/${s.eventId}/seats?section=A`).expect(200);
     const statuses = (res: { body: { seats: { status: string }[] } }) => res.body.seats.map((seat) => seat.status);
-    const startCached = (ttlMs: number) => start({ HOLD_STORE: store, AVAILABILITY_CACHE_TTL_MS: String(ttlMs) });
+    const startCached = (ttlMs: number, staleMs = 0) =>
+      start({ HOLD_STORE: store, AVAILABILITY_CACHE_TTL_MS: String(ttlMs), AVAILABILITY_STALE_MS: String(staleMs) });
     const expire = () => new Promise((resolve) => setTimeout(resolve, 60));
 
     it("answers exactly like the hold store, on a miss and on a hit", async () => {
@@ -115,7 +117,12 @@ describe("Event cache (e2e)", () => {
       await startCached(60_000);
       const hold = holdRequest(app, s.eventId);
       await seatMap(); // cached with every seat free
+      const freeKey = seatCacheKeys.free(s.eventId, "A");
+      const everySeatFree = await redis.client.getBuffer(freeKey);
       await hold(s.tokens[0], [s.seatIds[0]]).expect(201);
+      // A rebuild that read before the hold can write after its invalidation.
+      await redis.client.set(freeKey, everySeatFree!, "PX", 60_000);
+      await redis.client.set(seatCacheKeys.fresh(s.eventId, "A"), "1", "PX", 60_000);
 
       expect(statuses(await seatMap())[0]).toBe("available");
       expect((await hold(s.tokens[1], [s.seatIds[0]]).expect(409)).body.code).toBe("SEAT_UNAVAILABLE");
@@ -130,6 +137,45 @@ describe("Event cache (e2e)", () => {
       await expire();
 
       expect(statuses(await seatMap())[0]).toBe("unavailable");
+      expect((await availability()).body.sections[0].available).toBe(2);
+    });
+
+    it("the buyer sees their hold and their release at once, whatever the TTL", async () => {
+      await startCached(60_000, 60_000);
+      await seatMap();
+      await availability();
+
+      await holdRequest(app, s.eventId)(s.tokens[0], [s.seatIds[0]]).expect(201);
+      expect(statuses(await seatMap())[0]).toBe("unavailable");
+      expect((await availability()).body.sections[0].available).toBe(2);
+
+      await http(app)
+        .delete(`${API}/events/${s.eventId}/holds/me`)
+        .set("Authorization", `Bearer ${s.tokens[0]}`)
+        .expect(204);
+      expect(statuses(await seatMap())[0]).toBe("available");
+      expect((await availability()).body.sections[0].available).toBe(3);
+    });
+
+    it("a rebuild that read before a hold and wrote after its invalidation lasts only until the bound", async () => {
+      await startCached(100, 100);
+      const cache = app.get(SeatCache);
+      let finishQuery = () => {};
+      const staleRead = [{ name: "A", available: 3, total: 3 }];
+      const rebuild = cache.availability(s.eventId, async () => {
+        await new Promise<void>((resolve) => (finishQuery = resolve)); // read before the hold, not yet written
+        return staleRead;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      await holdRequest(app, s.eventId)(s.tokens[0], [s.seatIds[0]]).expect(201);
+      finishQuery();
+      await rebuild;
+
+      expect((await availability()).body.sections[0].available).toBe(3); // the race: the old state is back
+      await new Promise((resolve) => setTimeout(resolve, 230)); // 1.1 x TTL + stale window
+      await availability(); // may still be the last stale answer, while it refreshes
+      await new Promise((resolve) => setTimeout(resolve, 30));
       expect((await availability()).body.sections[0].available).toBe(2);
     });
 

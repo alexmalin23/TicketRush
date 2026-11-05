@@ -2,6 +2,7 @@ import { ConflictException, HttpException, Inject, Injectable, Logger, NotFoundE
 import { ENV, Env } from "../../config/env";
 import { DatabaseService } from "../../database/database.service";
 import { EventsModel } from "../events/events.model";
+import { SeatCache } from "../events/seat-cache";
 import { HOLD_STORE, HoldStore } from "../holds/hold-store";
 import { IdempotencyService, StoredResponse } from "../idempotency/idempotency.service";
 import { PaymentsClient } from "../payments/payments.client";
@@ -29,7 +30,8 @@ export class OrdersService implements OnInit, OnShutdown {
     private readonly ordersModel: OrdersModel,
     private readonly ticketsModel: TicketsModel,
     private readonly payments: PaymentsClient,
-    private readonly idempotency: IdempotencyService
+    private readonly idempotency: IdempotencyService,
+    private readonly seatCache: SeatCache
   ) {
     this.logger = logger.child("Orders");
   }
@@ -190,6 +192,7 @@ export class OrdersService implements OnInit, OnShutdown {
   private async releaseAfterDecline(orderId: string, userId: number, eventId: number, seatIds: number[]): Promise<void> {
     if (!(await this.ordersModel.moveStatus(orderId, "pending_payment", "failed"))) return;
     await this.holds.release(eventId, userId, seatIds);
+    await this.seatCache.invalidateSeats(eventId, seatIds);
   }
 
   /** The card was never touched: fail the order but keep the hold so the buyer can try again right away. */

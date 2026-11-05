@@ -1,5 +1,6 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from "../../core";
 import { EventsModel } from "../events/events.model";
+import { SeatCache } from "../events/seat-cache";
 import type { HeldSeat } from "../seats/seats.model";
 import { HOLD_STORE, HoldStore } from "./hold-store";
 
@@ -19,12 +20,14 @@ export interface MyHolds {
 export class HoldsService {
   constructor(
     private readonly eventsModel: EventsModel,
-    @Inject(HOLD_STORE) private readonly holds: HoldStore
+    @Inject(HOLD_STORE) private readonly holds: HoldStore,
+    private readonly seatCache: SeatCache
   ) {}
 
   async hold(eventId: number, userId: number, seatIds: number[]): Promise<HoldResult> {
     const event = await this.requireOnSale(eventId);
     const held = await this.holds.hold(eventId, userId, seatIds, event.maxSeatsPerUser);
+    await this.seatCache.invalidate(eventId, [...new Set(held.map((seat) => seat.section))]);
     return {
       seats: held.map(({ heldUntil: _heldUntil, ...seat }) => seat),
       expiresAt: held[0].heldUntil,
@@ -44,6 +47,7 @@ export class HoldsService {
   async release(eventId: number, userId: number, seatIds: number[] | null): Promise<void> {
     await this.requireEvent(eventId);
     await this.holds.release(eventId, userId, seatIds);
+    await this.seatCache.invalidateSeats(eventId, seatIds);
   }
 
   private async requireEvent(eventId: number) {

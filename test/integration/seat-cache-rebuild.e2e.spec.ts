@@ -26,7 +26,7 @@ describe("Seat cache rebuild (e2e)", () => {
   };
 
   beforeEach(async () => {
-    Object.assign(process.env, { CACHE_ENABLED: "true", AVAILABILITY_CACHE_TTL_MS: "60000" });
+    Object.assign(process.env, { CACHE_ENABLED: "true", AVAILABILITY_CACHE_TTL_MS: "60000", AVAILABILITY_STALE_MS: "60000" });
     app = await createTestApp();
     cache = app.get(SeatCache);
     redis = app.get(RedisService);
@@ -140,8 +140,43 @@ describe("Seat cache rebuild (e2e)", () => {
     expect(Date.now() - started).toBeLessThan(REBUILD_WAIT_MS);
   });
 
+  it("serves a stale entry at once while one request refreshes it", async () => {
+    await cache.availability(EVENT, async () => ROWS);
+    await redis.client.del(seatCacheKeys.fresh(EVENT, "counts"));
+    const newRows = [{ name: "A", available: 0, total: 2 }];
+    const load = slowLoad(newRows);
+
+    const answers = await Promise.all(Array.from({ length: 20 }, () => cache.availability(EVENT, load)));
+
+    for (const answer of answers) expect(answer).toEqual(ROWS);
+    await sleep(100);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(await cache.availability(EVENT, load)).toEqual(newRows);
+  });
+
+  it("a failed refresh leaves the stale answer and frees the lock", async () => {
+    await cache.availability(EVENT, async () => ROWS);
+    await redis.client.del(seatCacheKeys.fresh(EVENT, "counts"));
+
+    expect(await cache.availability(EVENT, () => Promise.reject(new Error("database down")))).toEqual(ROWS);
+
+    await sleep(20);
+    expect(await redis.client.exists(lock)).toBe(0);
+  });
+
+  it("entries written together do not all expire together", async () => {
+    const ttls = new Set<number>();
+    for (let event = 100; event < 120; event++) {
+      await cache.availability(event, async () => ROWS);
+      ttls.add(Math.round((await redis.client.pttl(seatCacheKeys.fresh(event, "counts"))) / 100));
+    }
+    expect(ttls.size).toBeGreaterThan(1);
+  });
+
   it("answers without Redis", async () => {
+    const closed = new Promise((resolve) => redis.client.once("end", resolve));
     redis.client.disconnect();
+    await closed;
     const load = slowLoad(ROWS, 0);
 
     expect(await cache.availability(EVENT, load)).toEqual(ROWS);

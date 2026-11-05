@@ -11,7 +11,7 @@ x-app-env: &app-env
   DATABASE_REPLICA_URL: postgres://postgres:postgres@postgres-replica:5432/modex
   READ_ROUTING: ${READ_ROUTING:-primary}
   # false = every read goes to Postgres (benchmark baseline).
-  CACHE_ENABLED: ${CACHE_ENABLED:-false}
+  CACHE_ENABLED: ${CACHE_ENABLED:-true}
   # Per replica: replicas x DB_POOL_MAX must stay under Postgres max_connections (100).
   DB_POOL_MAX: ${DB_POOL_MAX:-10}
   REDIS_URL: redis://redis:6379

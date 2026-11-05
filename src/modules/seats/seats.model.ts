@@ -76,6 +76,14 @@ export class SeatsModel {
     return rows;
   }
 
+  async sectionsOf(eventId: number, seatIds: number[] | null, db: Queryable = this.database): Promise<string[]> {
+    const { rows } = await db.query<{ section: string }>(
+      `SELECT DISTINCT section FROM seats WHERE event_id = $1 AND ($2::bigint[] IS NULL OR id = ANY($2::bigint[]))`,
+      [eventId, seatIds]
+    );
+    return rows.map((row) => row.section);
+  }
+
   async sectionPrices(eventId: number, db: Queryable = this.database): Promise<SectionPrice[]> {
     const { rows } = await db.query<SectionPrice>(
       `SELECT section AS name, min(price_cents) AS "priceCents"
