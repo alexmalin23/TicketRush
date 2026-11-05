@@ -1,0 +1,6 @@
+# Adds per-query statistics for a benchmark that counts database queries. Not part of the default
+# stack, so the baselines stay comparable:
+#   docker compose -f docker-compose.yml -f docker/postgres/pg-stat-statements.yml --profile full up -d
+services:
+  postgres:
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf", "-c", "shared_preload_libraries=pg_stat_statements"]

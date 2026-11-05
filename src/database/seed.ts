@@ -10,6 +10,7 @@ import { Queryable } from "./database.constants";
  *   npm run db:seed              create or restore the scenario (safe to run again)
  *   SEED_USERS=5000 npm run db:seed
  *   npm run db:reset             only reset the event (between load runs)
+ *   npm run db:seed -- large     add a 500,000-seat event, whose availability query is slow for real
  */
 export const SCENARIO = {
   venue: "Arena",
@@ -19,6 +20,8 @@ export const SCENARIO = {
   seatsPerRow: 25,
   userPassword: "password123",
 };
+
+const LARGE_SCENARIO = { ...SCENARIO, venue: "Stadium", event: "Stadium Tour", rows: 200, seatsPerRow: 250 };
 
 /**
  * Puts one event back to its on-sale starting point: no orders, payments or tickets,
@@ -48,14 +51,14 @@ export async function resetEvent(db: Queryable, eventId: number): Promise<number
  * One INSERT ... SELECT per table: Postgres generates the rows itself, so 30,000 rows
  * cost a few round trips instead of 30,000.
  */
-async function createEvent(db: Queryable): Promise<number> {
+async function createEvent(db: Queryable, scenario = SCENARIO): Promise<number> {
   const venue = await db.query<{ id: number }>("INSERT INTO venues (name) VALUES ($1) RETURNING id", [
-    SCENARIO.venue,
+    scenario.venue,
   ]);
   const event = await db.query<{ id: number }>(
     `INSERT INTO events (venue_id, name, starts_at, onsale_at, status)
      VALUES ($1, $2, now() + interval '30 days', now(), 'onsale') RETURNING id`,
-    [venue.rows[0].id, SCENARIO.event]
+    [venue.rows[0].id, scenario.event]
   );
   const eventId = event.rows[0].id;
 
@@ -69,14 +72,14 @@ async function createEvent(db: Queryable): Promise<number> {
        FROM unnest($2::text[]) AS section,
             generate_series(1, $3::int) AS row_number,
             generate_series(1, $4::int) AS seat_number`,
-    [eventId, SCENARIO.sections, SCENARIO.rows, SCENARIO.seatsPerRow]
+    [eventId, scenario.sections, scenario.rows, scenario.seatsPerRow]
   );
   return eventId;
 }
 
-async function findEventId(db: Queryable): Promise<number | null> {
+async function findEventId(db: Queryable, name = SCENARIO.event): Promise<number | null> {
   const { rows } = await db.query<{ id: number }>("SELECT id FROM events WHERE name = $1 ORDER BY id LIMIT 1", [
-    SCENARIO.event,
+    name,
   ]);
   return rows[0]?.id ?? null;
 }
@@ -115,6 +118,14 @@ async function seed(pool: Pool, userCount: number): Promise<void> {
   console.log(`Event ${eventId} "${SCENARIO.event}": on sale, ${seats} seats available`);
 }
 
+async function seedLarge(pool: Pool): Promise<void> {
+  const eventId = await inTransaction(
+    pool,
+    async (client) => (await findEventId(client, LARGE_SCENARIO.event)) ?? (await createEvent(client, LARGE_SCENARIO))
+  );
+  console.log(`Event ${eventId} "${LARGE_SCENARIO.event}": on sale`);
+}
+
 async function reset(pool: Pool): Promise<void> {
   const eventId = await findEventId(pool);
   if (eventId === null) throw new Error(`Event "${SCENARIO.event}" not found, run db:seed first`);
@@ -133,7 +144,8 @@ if (require.main === module) {
 
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const started = Date.now();
-  const task = process.argv[2] === "reset" ? reset(pool) : seed(pool, userCount);
+  const tasks: Record<string, () => Promise<void>> = { reset: () => reset(pool), large: () => seedLarge(pool) };
+  const task = (tasks[process.argv[2]] ?? (() => seed(pool, userCount)))();
   task
     .then(() => console.log(`Done in ${((Date.now() - started) / 1000).toFixed(1)}s`))
     .catch((error) => {
