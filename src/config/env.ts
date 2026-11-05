@@ -60,6 +60,16 @@ const EnvSchema = z.object({
   /** How long past that an old answer is still served while one request refreshes it. */
   AVAILABILITY_STALE_MS: z.coerce.number().int().nonnegative().default(1000),
 
+  /** async answers 202 and charges in the worker; sync charges inside the request (benchmark baseline). */
+  ORDER_PROCESSING: z.enum(["sync", "async"]).default("sync"),
+  /** Payment jobs one worker process runs at a time. */
+  WORKER_CONCURRENCY: z.coerce.number().int().positive().default(20),
+
+  /** Buyers need an access token from the waiting room to hold seats. */
+  WAITING_ROOM_ENABLED: z.stringbool().default(false),
+  WAITING_ROOM_ADMIT_PER_SECOND: z.coerce.number().int().nonnegative().default(50),
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+
   /** Exposes /api/v1/dev/* (event reset between load runs). Never enable in production. */
   ENABLE_DEV_ROUTES: z.stringbool().default(false),
 }).refine((env) => env.READ_ROUTING === "primary" || env.DATABASE_REPLICA_URL, {

@@ -124,6 +124,16 @@ export class OrdersModel {
     return rows;
   }
 
+  async findPendingForPayment(orderId: string): Promise<StuckOrder | null> {
+    const { rows } = await this.database.query<StuckOrder>(
+      `SELECT o.id, o.user_id AS "userId", o.event_id AS "eventId", o.total_cents AS "totalCents",
+          ARRAY(SELECT seat_id::int FROM order_items i WHERE i.order_id = o.id ORDER BY seat_id) AS "seatIds"
+         FROM orders o WHERE o.id = $1 AND o.status = 'pending_payment'`,
+      [orderId]
+    );
+    return rows[0] ?? null;
+  }
+
   /** Ends a lease early, so the next run of any replica can take the order again. */
   async releaseLease(orderId: string, afterSeconds: number): Promise<void> {
     await this.database.query(

@@ -19,6 +19,11 @@ x-app-env: &app-env
   HOLD_STORE: ${HOLD_STORE:-postgres}
   # memory reproduces the per-replica limiter baseline (limit x replicas).
   RATE_LIMIT_STORE: ${RATE_LIMIT_STORE:-redis}
+  # async = 202 and charge in the worker; sync = charge inside the request (benchmark baseline).
+  ORDER_PROCESSING: ${ORDER_PROCESSING:-async}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-20}
+  WAITING_ROOM_ENABLED: ${WAITING_ROOM_ENABLED:-false}
+  WAITING_ROOM_ADMIT_PER_SECOND: ${WAITING_ROOM_ADMIT_PER_SECOND:-50}
   # Local development value only; real environments inject a secret.
   JWT_SECRET: ${JWT_SECRET:-local-dev-secret-change-me}
   LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -144,6 +149,24 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Takes payment jobs off the queue. No port: it talks to Redis, Postgres and the provider only.
+  worker:
+    profiles: [full]
+    build: .
+    image: ticketrush-api
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *app-env
+      PAYMENTS_PROVIDER_URL: http://payments:3100
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      payments:
+        condition: service_healthy
+    restart: unless-stopped
+
   lb:
     profiles: [full]
     image: nginx:1.27.3-alpine
@@ -160,6 +183,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      worker:
+        condition: service_started # `npm run load` starts only what lb depends on
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
       interval: 5s

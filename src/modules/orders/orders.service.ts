@@ -8,6 +8,7 @@ import { IdempotencyService, StoredResponse } from "../idempotency/idempotency.s
 import { PaymentsClient } from "../payments/payments.client";
 import { Ticket, TicketsModel } from "../tickets/tickets.model";
 import { Order, OrdersModel } from "./orders.model";
+import { PaymentQueue } from "./payment-queue";
 import { CreateOrderInput } from "./orders.schemas";
 
 /** A charge that times out may or may not have happened; asking again with the same key is safe. */
@@ -31,7 +32,8 @@ export class OrdersService implements OnInit, OnShutdown {
     private readonly ticketsModel: TicketsModel,
     private readonly payments: PaymentsClient,
     private readonly idempotency: IdempotencyService,
-    private readonly seatCache: SeatCache
+    private readonly seatCache: SeatCache,
+    private readonly paymentQueue: PaymentQueue
   ) {
     this.logger = logger.child("Orders");
   }
@@ -94,6 +96,14 @@ export class OrdersService implements OnInit, OnShutdown {
   private async placeOrder(userId: number, input: CreateOrderInput): Promise<StoredResponse> {
     const { orderId, totalCents } = await this.createPendingOrder(userId, input);
 
+    if (this.env.ORDER_PROCESSING === "async") {
+      await this.paymentQueue.enqueue(orderId).catch((error) => {
+        // The order is safe in Postgres, and the reconciler finishes pending orders no job is working on.
+        this.logger.error("Could not queue a payment", { orderId, error: String(error) });
+      });
+      return { status: 202, body: await this.ordersModel.findOwned(orderId, userId) };
+    }
+
     const outcome = await this.chargeWithRetries(orderId, totalCents);
 
     if (outcome.status === "succeeded") {
@@ -107,6 +117,28 @@ export class OrdersService implements OnInit, OnShutdown {
     // The provider never answered: the buyer may or may not have been charged. The order stays
     // pending_payment with its seats held until the outcome is known; the buyer polls GET /orders/:id.
     return { status: 202, body: await this.ordersModel.findOwned(orderId, userId) };
+  }
+
+  /**
+   * The queue delivers a job at least once, and two workers can run the same order at the same time.
+   * Repeating is safe: the provider key makes it one charge, and sellAndIssue moves the status with a
+   * guard, so one run sells. An unknown outcome throws: the queue retries it with a growing delay.
+   */
+  async processPayment(orderId: string): Promise<void> {
+    const order = await this.ordersModel.findPendingForPayment(orderId);
+    if (!order) return; // already decided by an earlier run or by the reconciler
+
+    let outcome;
+    try {
+      outcome = await this.payments.charge({ idempotencyKey: `order-${order.id}`, amountCents: order.totalCents });
+    } catch (error) {
+      await this.ordersModel.recordPayment(order.id, "unreachable", null);
+      throw error;
+    }
+    await this.ordersModel.recordPayment(order.id, outcome.status, "providerRef" in outcome ? outcome.providerRef : null);
+    if (outcome.status === "succeeded") await this.sellAndIssue(order.id, order.userId, order.eventId, order.seatIds);
+    if (outcome.status === "declined") await this.releaseAfterDecline(order.id, order.userId, order.eventId, order.seatIds);
+    if (outcome.status === "timeout") throw new Error(`Charge for order ${order.id} timed out`);
   }
 
   /** Transaction 1: prove the buyer holds every seat, create the order, keep the seats for the payment. */
