@@ -7,6 +7,7 @@ import { DevController } from "./modules/dev/dev.controller";
 import { EventsController } from "./modules/events/events.controller";
 import { HoldsController } from "./modules/holds/holds.controller";
 import { holdStoreProvider } from "./modules/holds/hold-store";
+import { MetricsController } from "./modules/metrics/metrics.controller";
 import { OrdersController } from "./modules/orders/orders.controller";
 import { HealthController } from "./modules/health/health.controller";
 import { UsersController } from "./modules/users/users.controller";
@@ -21,6 +22,6 @@ import { WaitingRoomController } from "./modules/waiting-room/waiting-room.contr
  *   choices made once at startup (where holds live).
  */
 export const appDefinition = defineApp({
-  controllers: [HealthController, UsersController, AuthController, EventsController, HoldsController, OrdersController, WaitingRoomController, DevController],
+  controllers: [HealthController, UsersController, AuthController, EventsController, HoldsController, OrdersController, WaitingRoomController, DevController, MetricsController],
   providers: [envProvider, poolProvider, replicaPoolProvider, redisProvider, holdStoreProvider],
 });

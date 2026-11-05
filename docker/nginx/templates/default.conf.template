@@ -15,6 +15,11 @@ upstream api {
 server {
   listen 80;
 
+  # Scraped per replica by Prometheus; through the balancer it would be a random replica's numbers.
+  location = /metrics {
+    return 404;
+  }
+
   location / {
     proxy_pass http://api;
     proxy_http_version 1.1;

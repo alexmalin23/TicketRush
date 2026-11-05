@@ -107,6 +107,28 @@
               "type": "noauth"
             }
           }
+        },
+        {
+          "name": "Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": {
+              "type": "noauth"
+            },
+            "url": {
+              "raw": "http://localhost:3000/metrics",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "3000",
+              "path": [
+                "metrics"
+              ]
+            },
+            "description": "Prometheus format, per replica. Not exposed through the load balancer (404 on {{baseUrl}}): reachable only with `npm run dev`, or from inside the Compose network."
+          }
         }
       ]
     },

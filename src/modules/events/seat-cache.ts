@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ENV, Env } from "../../config/env";
 import { Inject, Injectable } from "../../core";
 import { RedisService } from "../../database/redis.service";
+import { MetricsService } from "../metrics/metrics.service";
 import { SeatsModel, SeatView, SectionAvailability } from "../seats/seats.model";
 
 type SeatLayout = Omit<SeatView, "status">;
@@ -57,7 +58,8 @@ export class SeatCache {
   constructor(
     @Inject(ENV) private readonly env: Env,
     private readonly redis: RedisService,
-    private readonly seats: SeatsModel
+    private readonly seats: SeatsModel,
+    private readonly metrics: MetricsService
   ) {}
 
   async availability(eventId: number, load: () => Promise<SectionAvailability[]>): Promise<SectionAvailability[]> {
@@ -99,6 +101,7 @@ export class SeatCache {
   private async serve<T>(eventId: number, what: string, read: () => Promise<T | null>, rebuild: () => Promise<T>): Promise<T> {
     const lockKey = seatCacheKeys.rebuild(eventId, what);
     const [entry, fresh] = await Promise.all([read(), this.redis.client.exists(seatCacheKeys.fresh(eventId, what)).catch(() => 0)]);
+    this.metrics.countSeatCache(!entry ? "miss" : fresh ? "fresh" : "stale");
     if (!entry) return this.singleFlight(lockKey, read, rebuild);
     if (!fresh) void this.refresh(lockKey, rebuild);
     return entry;

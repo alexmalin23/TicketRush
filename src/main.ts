@@ -4,6 +4,7 @@ import cors from "cors";
 import { appDefinition } from "./app";
 import { ENV, Env, loadDotEnvFile } from "./config/env";
 import { ExpressFactory } from "./core";
+import { MetricsService } from "./modules/metrics/metrics.service";
 
 async function bootstrap() {
   loadDotEnvFile(); // .env -> process.env (before anything reads it)
@@ -15,6 +16,8 @@ async function bootstrap() {
   app.use(
     cors({ origin: env.CORS_ORIGIN === "*" ? "*" : env.CORS_ORIGIN.split(",").map((o) => o.trim()) })
   );
+
+  app.use(app.get(MetricsService).middleware);
 
   app.enableShutdownHooks(); // Ctrl+C / docker stop -> finish requests, close the DB pool
   await app.listen(env.PORT);

@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: api
+    # Docker DNS returns one address per replica, so each is scraped on its own.
+    dns_sd_configs:
+      - names: [api]
+        type: A
+        port: 3000

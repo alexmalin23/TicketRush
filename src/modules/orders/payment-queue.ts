@@ -21,16 +21,27 @@ export const queueConnection = (env: Env) => ({ url: env.REDIS_URL, maxRetriesPe
 @Injectable()
 export class PaymentQueue implements OnShutdown {
   private queue?: Queue<PaymentJob>;
+  private dead?: Queue;
 
   constructor(@Inject(ENV) private readonly env: Env) {}
 
+  private open(): Queue<PaymentJob> {
+    // Without this a request would wait for Redis to come back; failing lets the reconciler take over.
+    this.queue ??= new Queue<PaymentJob>(PAYMENTS_QUEUE, { connection: { ...queueConnection(this.env), enableOfflineQueue: false } });
+    return this.queue;
+  }
+
+  /** Empty with ORDER_PROCESSING=sync: no queue, no connection. */
+  async counts(): Promise<Record<string, number>> {
+    if (this.env.ORDER_PROCESSING === "sync") return {};
+    this.dead ??= new Queue(PAYMENTS_DEAD_QUEUE, { connection: { ...queueConnection(this.env), enableOfflineQueue: false } });
+    const [jobs, dead] = await Promise.all([this.open().getJobCounts("waiting", "active", "delayed"), this.dead.getWaitingCount()]);
+    return { ...jobs, dead };
+  }
+
   /** The job id is the order: asking twice for the same order queues one job. */
   async enqueue(orderId: string): Promise<void> {
-    this.queue ??= new Queue<PaymentJob>(PAYMENTS_QUEUE, {
-      // Without this a request would wait for Redis to come back; failing lets the reconciler take over.
-      connection: { ...queueConnection(this.env), enableOfflineQueue: false },
-    });
-    await this.queue.add(
+    await this.open().add(
       "charge",
       { orderId },
       {
@@ -45,5 +56,6 @@ export class PaymentQueue implements OnShutdown {
 
   async onShutdown(): Promise<void> {
     await this.queue?.close();
+    await this.dead?.close();
   }
 }
