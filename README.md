@@ -37,22 +37,51 @@ sequenceDiagram
     participant R as Redis
     participant P as Postgres
     participant W as Worker
-    B->>A: POST /events/:id/queue
-    A->>R: join the line
-    B->>A: GET /events/:id/queue (poll)
-    A-->>B: admitted, access token
-    B->>A: POST /events/:id/holds + token
-    A->>P: conditional UPDATE
-    A-->>B: 201 held
-    B->>A: POST /orders + Idempotency-Key
-    A->>P: pending order, seats kept
-    A->>R: payment job
-    A-->>B: 202 pending
-    W->>R: take the job
-    W->>W: charge, key order-id
-    W->>P: sell and issue in one transaction
-    B->>A: GET /orders/:id (poll)
-    A-->>B: issued, tickets
+    participant C as Card provider
+
+    rect rgba(128, 128, 128, 0.12)
+    Note over B,C: 1. Log in
+    B->>A: Log in with email and password
+    A->>P: Check email and password
+    A-->>B: Logged in, here is your login token
+    end
+
+    rect rgba(66, 133, 244, 0.12)
+    Note over B,C: 2. Waiting room
+    B->>A: Enter the waiting room
+    A->>R: Save buyer position
+    B->>A: Can I enter yet?
+    A-->>B: Yes, here is your access token
+    end
+
+    rect rgba(52, 168, 83, 0.12)
+    Note over B,C: 3. Reserve a seat
+    B->>A: Reserve this seat (with access token)
+    A->>P: Reserve only if the seat is available
+    A-->>B: Reserved for 10 minutes
+    end
+
+    rect rgba(251, 188, 4, 0.12)
+    Note over B,C: 4. Create the order
+    B->>A: Buy the reserved seat
+    A->>P: Save the order, not paid yet
+    A->>R: Add payment to the queue
+    A-->>B: Order received, payment in progress
+    end
+
+    rect rgba(234, 67, 53, 0.12)
+    Note over B,C: 5. Payment (background process)
+    R->>W: Worker picks up the payment
+    W->>C: Charge the credit card
+    C-->>W: Payment approved
+    W->>P: Mark seat as sold and create the ticket
+    end
+
+    rect rgba(142, 68, 173, 0.12)
+    Note over B,C: 6. Receive the ticket
+    B->>A: Is my order paid?
+    A-->>B: Yes, here is your ticket
+    end
 ```
 
 ## Key engineering problems solved
